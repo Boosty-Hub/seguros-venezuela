@@ -129,7 +129,8 @@ function renderFunnel(f) {
   rows.forEach((r) => {
     const cnt = Number(r.tickets);
     const w = Math.max(2, (cnt / max) * 100);
-    const conv = prev ? ` · ${(cnt / prev * 100).toFixed(0)}% vs. etapa previa` : '';
+    // Conversion solo entre etapas ABIERTAS consecutivas (no en ganado/perdido)
+    const conv = (r.stage_group === 'abierto' && prev) ? ` · ${(cnt / prev * 100).toFixed(0)}% vs. etapa previa` : '';
     cont.appendChild(el(
       `<div class="funnel-row">
         <div class="funnel-head">
