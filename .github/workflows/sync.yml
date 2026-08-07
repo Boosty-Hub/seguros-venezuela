@@ -1,0 +1,38 @@
+name: Sync Zoho -> Supabase
+
+# Auto-actualizacion del pipeline: trae los tickets nuevos/modificados de Zoho
+# Desk hacia Supabase. El dashboard (Supabase Realtime) se refresca solo.
+on:
+  schedule:
+    - cron: '*/5 * * * *'      # cada 5 minutos (hora UTC)
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Modo de sync'
+        type: choice
+        options: [incremental, full, enrich]
+        default: incremental
+
+concurrency:
+  group: zoho-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Sincronizar
+        working-directory: sync
+        env:
+          ZOHO_CLIENT_ID: ${{ secrets.ZOHO_CLIENT_ID }}
+          ZOHO_CLIENT_SECRET: ${{ secrets.ZOHO_CLIENT_SECRET }}
+          ZOHO_REFRESH_TOKEN: ${{ secrets.ZOHO_REFRESH_TOKEN }}
+          ZOHO_ORG_ID: ${{ secrets.ZOHO_ORG_ID }}
+          ZOHO_DEPARTMENT_ID: ${{ secrets.ZOHO_DEPARTMENT_ID }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: node sync.mjs ${{ github.event.inputs.mode || 'incremental' }}

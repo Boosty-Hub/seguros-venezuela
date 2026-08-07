@@ -1,0 +1,13 @@
+{
+  "name": "sv-pipeline-sync",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Sincronizacion Zoho Desk -> Supabase para el pipeline de Seguros Venezuela",
+  "scripts": {
+    "full": "node sync.mjs full",
+    "incremental": "node sync.mjs incremental",
+    "enrich": "node sync.mjs enrich"
+  },
+  "engines": { "node": ">=18" }
+}

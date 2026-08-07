@@ -1,0 +1,6 @@
+node_modules/
+.env
+sync/.env
+*.log
+.DS_Store
+dashboard/config.local.js
