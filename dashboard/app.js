@@ -124,13 +124,13 @@ function renderKPIs(k, funnel) {
 function renderFunnel(f) {
   const rows = [...f].sort((a, b) => a.stage_order - b.stage_order);
   const max = Math.max(1, ...rows.map((r) => Number(r.tickets)));
+  const totalAbierto = rows.filter((r) => r.stage_group === 'abierto').reduce((a, r) => a + Number(r.tickets), 0) || 1;
   const cont = $('funnel'); cont.innerHTML = '';
-  let prev = null;
   rows.forEach((r) => {
     const cnt = Number(r.tickets);
     const w = Math.max(2, (cnt / max) * 100);
-    // Conversion solo entre etapas ABIERTAS consecutivas (no en ganado/perdido)
-    const conv = (r.stage_group === 'abierto' && prev) ? ` · ${(cnt / prev * 100).toFixed(0)}% vs. etapa previa` : '';
+    // Para etapas abiertas, mostramos su peso dentro del pipeline activo.
+    const share = r.stage_group === 'abierto' ? ` · ${(cnt / totalAbierto * 100).toFixed(0)}% del pipeline` : '';
     cont.appendChild(el(
       `<div class="funnel-row">
         <div class="funnel-head">
@@ -138,10 +138,9 @@ function renderFunnel(f) {
           <span><span class="cnt">${fmtN(cnt)}</span><span class="prima">${fmtMoney(r.total_prima)}</span></span>
         </div>
         <div class="funnel-bar"><span style="width:${w}%;background:${r.color}"></span></div>
-        <div class="conv">${r.stage_group}${conv}</div>
+        <div class="conv">${r.stage_group}${share}</div>
       </div>`
     ));
-    if (r.stage_group === 'abierto') prev = cnt;
   });
 }
 
