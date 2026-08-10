@@ -1,5 +1,8 @@
 # Seguros Venezuela · Pipeline de Ventas
 
+> 📓 **[BITACORA.md](BITACORA.md)** — estado actual, qué falta y las trampas ya
+> diagnosticadas. Leerlo antes de retomar el trabajo.
+
 Dashboard tipo **embudo de ventas / pipeline** con todos los tickets de **Zoho Desk**
 (departamento *Administración de Pólizas*), sincronizados a **Supabase** y
 visualizados en una web con **actualización automática**.

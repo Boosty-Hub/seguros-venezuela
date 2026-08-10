@@ -13,7 +13,7 @@ import {
   getTicketsMissingDetail, countTickets,
   getKommoState, getTicketsPendingKommo, markKommoSynced, getTicketsYaEnKommo,
   upsertMetaLeads, getMetaState, getMetaLeadsPendingKommo, markMetaKommoSynced,
-  getMetaLeadsYaEnZoho,
+  getMetaLeadsYaEnZoho, insertSyncLog,
 } from './lib/supa.mjs';
 import { ticketToRow } from './lib/parse.mjs';
 import {
@@ -27,6 +27,20 @@ const ENRICH_CONCURRENCY = 5;
 const MAX_PAGES = 1000; // salvaguarda anti-bucle (100k tickets)
 
 function log(...a) { console.log(new Date().toISOString(), ...a); }
+
+// -------- bitacora: se acumula durante la corrida y se graba al final --------
+const STATS = {
+  started_at: new Date().toISOString(),
+  entorno: process.env.GITHUB_ACTIONS ? 'github-actions' : 'local',
+  tickets_nuevos: 0,
+  tickets_refrescados: 0,
+  leads_zoho_creados: 0,
+  zoho_vinculados: 0,
+  meta_filas_hoja: 0,
+  leads_meta_creados: 0,
+  meta_vinculados: 0,
+  detalle: {},
+};
 
 // -------- pool de concurrencia simple --------
 async function pool(items, worker, concurrency) {
@@ -150,6 +164,8 @@ async function incrementalSync({ refreshOpen = 200 } = {}) {
     last_run_updated: refrescados,
     last_error: null,
   });
+  STATS.tickets_nuevos = insertados;
+  STATS.tickets_refrescados = refrescados;
   log(`INCREMENTAL listo: ${insertados} nuevo(s), ${refrescados} refrescado(s), total ${count}`);
   return insertados;
 }
@@ -185,6 +201,7 @@ async function pushToKommo({ dryRun = false, limit = 200 } = {}) {
   const mapaYa = new Map(yaEnKommo.map((x) => [x.ticket_id, x]));
   const vinculados = pend.filter((p) => mapaYa.has(p.id));
   if (vinculados.length) {
+    STATS.zoho_vinculados += vinculados.length;
     log(`  ${vinculados.length} duplicado(s) de Zoho: se vinculan al lead existente en vez de crearse`);
     for (const v of vinculados.slice(0, 3)) {
       const x = mapaYa.get(v.id);
@@ -243,6 +260,7 @@ async function pushToKommo({ dryRun = false, limit = 200 } = {}) {
       .map((s) => ({ sourceId: s.ticket.id, leadId: leadPorClave.get(s.clave) }))
       .filter((x) => x.leadId);
     if (herencia.length) await markKommoSynced(herencia);
+    STATS.zoho_vinculados += herencia.length;
     log(`  ${herencia.length} duplicado(s) del lote vinculados al lead de su hermano`);
   }
 
@@ -257,6 +275,7 @@ async function pushToKommo({ dryRun = false, limit = 200 } = {}) {
     kommo_total: (st.kommo_total || 0) + ok,
     kommo_last_error: fail ? `${fail} ticket(s) sin lead` : null,
   });
+  STATS.leads_zoho_creados = ok;
   log(`KOMMO listo: ${ok} lead(s) creados${fusionados ? ` (${fusionados} con contacto fusionado)` : ''}` +
       `${fail ? `, ${fail} con error` : ''}`);
   return ok;
@@ -271,6 +290,7 @@ async function pushToKommo({ dryRun = false, limit = 200 } = {}) {
 async function syncMeta({ dryRun = false, limit = 500, skipSolapados = true } = {}) {
   log(`META · hoja ${sheetsConfig.SHEET_ID}`);
   const filas = await fetchMetaLeads();
+  STATS.meta_filas_hoja = filas.length;
   log(`  ${filas.length} lead(s) en la hoja`);
   const guardados = await upsertMetaLeads(filas);
   log(`  ${guardados} replicado(s) en Supabase`);
@@ -298,6 +318,7 @@ async function syncMeta({ dryRun = false, limit = 500, skipSolapados = true } = 
     const mapa = new Map(solapados.map((s) => [s.meta_id, s]));
     const omitidos = pend.filter((p) => mapa.has(p.id));
     if (omitidos.length) {
+      STATS.meta_vinculados += omitidos.length;
       log(`  ${omitidos.length} omitido(s): ya estan en Kommo via ticket de Zoho`);
       for (const o of omitidos.slice(0, 5)) {
         const s = mapa.get(o.id);
@@ -334,6 +355,7 @@ async function syncMeta({ dryRun = false, limit = 500, skipSolapados = true } = 
     meta_total: filas.length,
     meta_last_error: fail ? `${fail} lead(s) sin crear` : null,
   });
+  STATS.leads_meta_creados = ok;
   log(`META listo: ${ok} lead(s) creados en Kommo` +
       `${fusionados ? ` (${fusionados} con contacto fusionado)` : ''}${fail ? `, ${fail} con error` : ''}`);
   return ok;
@@ -408,9 +430,35 @@ try {
   }
   else if (mode === 'meta-init') { await metaInit(flags[0]); }
   else { console.error(`Modo desconocido: ${mode}`); process.exit(1); }
+  await grabarBitacora({ ok: true });
   log('OK');
 } catch (e) {
   log('ERROR', e.message || e);
   try { await updateSyncState({ last_error: String(e.message || e) }); } catch {}
+  await grabarBitacora({ ok: false, error: String(e.message || e) });
   process.exit(1);
+}
+
+/** Cierra la fila de bitacora de esta corrida. */
+async function grabarBitacora({ ok, error = null }) {
+  // Los modos de configuracion y los dry-run no son ejecuciones reales.
+  if (mode.endsWith('-init') || hasFlag('--dry-run')) return;
+  const fin = new Date();
+  await insertSyncLog({
+    started_at: STATS.started_at,
+    finished_at: fin.toISOString(),
+    duracion_seg: (fin - new Date(STATS.started_at)) / 1000,
+    modo: mode,
+    entorno: STATS.entorno,
+    ok,
+    tickets_nuevos: STATS.tickets_nuevos,
+    tickets_refrescados: STATS.tickets_refrescados,
+    leads_zoho_creados: STATS.leads_zoho_creados,
+    zoho_vinculados: STATS.zoho_vinculados,
+    meta_filas_hoja: STATS.meta_filas_hoja,
+    leads_meta_creados: STATS.leads_meta_creados,
+    meta_vinculados: STATS.meta_vinculados,
+    error,
+    detalle: Object.keys(STATS.detalle).length ? STATS.detalle : null,
+  });
 }

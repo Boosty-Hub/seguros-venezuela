@@ -175,6 +175,26 @@ export async function markKommoSynced(pairs) {
 }
 
 /**
+ * Graba una fila en la bitacora de ejecuciones. Nunca lanza: si la bitacora
+ * falla no debe tumbar un sync que ya hizo su trabajo.
+ */
+export async function insertSyncLog(row) {
+  try {
+    requireEnv();
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/sync_log`, {
+      method: 'POST',
+      headers: headers({ Prefer: 'return=minimal' }),
+      body: JSON.stringify(row),
+    });
+    if (!r.ok) console.warn('  aviso: no se pudo grabar la bitacora:', (await r.text()).slice(0, 200));
+    return r.ok;
+  } catch (e) {
+    console.warn('  aviso: no se pudo grabar la bitacora:', e.message);
+    return false;
+  }
+}
+
+/**
  * Tickets pendientes cuya solicitud YA tiene lead en Kommo (creado por otro
  * ticket equivalente de Zoho). Se vinculan en vez de duplicarse.
  */
