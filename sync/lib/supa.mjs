@@ -63,6 +63,38 @@ export async function getWatermark() {
   return j[0]?.modified_time || null;
 }
 
+/**
+ * max(created_time) almacenado. Es el watermark REAL del incremental: el
+ * listado de Zoho no devuelve modifiedTime, pero si createdTime, y el orden
+ * por -createdTime si es fiable.
+ */
+export async function getCreatedWatermark() {
+  requireEnv();
+  const r = await fetch(
+    `${SUPABASE_URL}/rest/v1/tickets?select=created_time&order=created_time.desc.nullslast&limit=1`,
+    { headers: headers() },
+  );
+  if (!r.ok) throw new Error(`Supabase watermark created -> HTTP ${r.status}: ${await r.text()}`);
+  const j = await r.json();
+  return j[0]?.created_time || null;
+}
+
+/**
+ * Tickets abiertos que llevan mas tiempo sin refrescarse. Sirve para detectar
+ * cambios de etapa, que el listado de Zoho no permite filtrar por fecha.
+ */
+export async function getOpenTicketsToRefresh({ limit = 200 } = {}) {
+  requireEnv();
+  const url =
+    `${SUPABASE_URL}/rest/v1/tickets?select=id` +
+    `&status_type=in.(Open,"On Hold")` +
+    `&order=synced_at.asc.nullsfirst&limit=${limit}`;
+  const r = await fetch(url, { headers: headers() });
+  if (!r.ok) throw new Error(`Supabase refresh abiertos -> HTTP ${r.status}: ${await r.text()}`);
+  const j = await r.json();
+  return j.map((x) => x.id);
+}
+
 export async function countTickets() {
   requireEnv();
   const r = await fetch(`${SUPABASE_URL}/rest/v1/tickets?select=id`, {
@@ -81,4 +113,171 @@ export async function updateSyncState(patch) {
     body: JSON.stringify(body),
   });
   if (!r.ok) throw new Error(`Supabase sync_state -> HTTP ${r.status}: ${await r.text()}`);
+}
+
+/* ---------------------------------------------------------------------------
+ * Integracion Kommo CRM
+ * -------------------------------------------------------------------------*/
+
+/** Estado de la integracion Kommo (corte, contadores). */
+export async function getKommoState() {
+  requireEnv();
+  const r = await fetch(
+    `${SUPABASE_URL}/rest/v1/sync_state?id=eq.1&select=kommo_since,kommo_total,kommo_last_run`,
+    { headers: headers() },
+  );
+  if (!r.ok) throw new Error(`Supabase kommo_state -> HTTP ${r.status}: ${await r.text()}`);
+  const j = await r.json();
+  return j[0] || {};
+}
+
+/**
+ * Tickets que todavia no tienen lead en Kommo y son POSTERIORES al corte.
+ * El corte (kommo_since) es lo que evita volcar el historico al CRM.
+ */
+export async function getTicketsPendingKommo({ since, limit = 200 } = {}) {
+  requireEnv();
+  if (!since) throw new Error('getTicketsPendingKommo: falta el corte (kommo_since)');
+  const cols = [
+    'id', 'ticket_number', 'subject', 'status', 'status_type', 'channel',
+    'contact_name', 'email', 'phone', 'titular', 'asesor', 'plan_hcm',
+    'monto_prima', 'moneda', 'created_time', 'web_url',
+  ].join(',');
+  const url =
+    `${SUPABASE_URL}/rest/v1/tickets?select=${cols}` +
+    `&kommo_lead_id=is.null` +
+    `&created_time=gte.${encodeURIComponent(since)}` +
+    `&is_spam=is.false` +
+    `&order=created_time.asc&limit=${limit}`;
+  const r = await fetch(url, { headers: headers() });
+  if (!r.ok) throw new Error(`Supabase pendientes Kommo -> HTTP ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+/** Graba el lead_id devuelto por Kommo (o el error) en cada ticket. */
+export async function markKommoSynced(pairs) {
+  requireEnv();
+  if (!pairs.length) return 0;
+  const now = new Date().toISOString();
+  const rows = pairs.map((p) => ({
+    id: p.sourceId,
+    kommo_lead_id: p.leadId || null,
+    kommo_synced_at: p.leadId ? now : null,
+    kommo_error: p.leadId ? null : (p.error || 'sin lead_id'),
+  }));
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/tickets?on_conflict=id`, {
+    method: 'POST',
+    headers: headers({ Prefer: 'resolution=merge-duplicates,return=minimal' }),
+    body: JSON.stringify(rows),
+  });
+  if (!r.ok) throw new Error(`Supabase marcar Kommo -> HTTP ${r.status}: ${await r.text()}`);
+  return rows.filter((x) => x.kommo_lead_id).length;
+}
+
+/**
+ * Tickets pendientes cuya solicitud YA tiene lead en Kommo (creado por otro
+ * ticket equivalente de Zoho). Se vinculan en vez de duplicarse.
+ */
+export async function getTicketsYaEnKommo({ since } = {}) {
+  requireEnv();
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/tickets_ya_en_kommo`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ p_since: since ?? null }),
+  });
+  if (!r.ok) throw new Error(`Supabase tickets_ya_en_kommo -> HTTP ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+/** Grupos que produjeron mas de un lead (auditoria de limpieza). */
+export async function getKommoDuplicados() {
+  requireEnv();
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/kommo_duplicados?select=*`, { headers: headers() });
+  if (!r.ok) throw new Error(`Supabase kommo_duplicados -> HTTP ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+/* ---------------------------------------------------------------------------
+ * Leads de Meta (hoja de Google)
+ * -------------------------------------------------------------------------*/
+
+/** Upsert por lotes en meta_leads. No pisa las columnas de control de Kommo. */
+export async function upsertMetaLeads(rows) {
+  requireEnv();
+  if (!rows.length) return 0;
+  const BATCH = 500;
+  let done = 0;
+  for (let i = 0; i < rows.length; i += BATCH) {
+    const batch = rows.slice(i, i + BATCH);
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/meta_leads?on_conflict=id`, {
+      method: 'POST',
+      headers: headers({ Prefer: 'resolution=merge-duplicates,return=minimal' }),
+      body: JSON.stringify(batch),
+    });
+    if (!r.ok) throw new Error(`Supabase upsert meta_leads -> HTTP ${r.status}: ${(await r.text()).slice(0, 400)}`);
+    done += batch.length;
+  }
+  return done;
+}
+
+export async function getMetaState() {
+  requireEnv();
+  const r = await fetch(
+    `${SUPABASE_URL}/rest/v1/sync_state?id=eq.1&select=meta_since,meta_total,meta_last_run`,
+    { headers: headers() },
+  );
+  if (!r.ok) throw new Error(`Supabase meta_state -> HTTP ${r.status}: ${await r.text()}`);
+  const j = await r.json();
+  return j[0] || {};
+}
+
+/** Leads de Meta posteriores al corte que aun no tienen lead en Kommo. */
+export async function getMetaLeadsPendingKommo({ since, limit = 200 } = {}) {
+  requireEnv();
+  if (!since) throw new Error('getMetaLeadsPendingKommo: falta el corte (meta_since)');
+  const url =
+    `${SUPABASE_URL}/rest/v1/meta_leads?select=*` +
+    `&kommo_lead_id=is.null` +
+    `&created_time=gte.${encodeURIComponent(since)}` +
+    `&order=created_time.asc&limit=${limit}`;
+  const r = await fetch(url, { headers: headers() });
+  if (!r.ok) throw new Error(`Supabase pendientes Meta -> HTTP ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+export async function markMetaKommoSynced(pairs) {
+  requireEnv();
+  if (!pairs.length) return 0;
+  const now = new Date().toISOString();
+  const rows = pairs.map((p) => ({
+    id: p.sourceId,
+    kommo_lead_id: p.leadId || null,
+    kommo_synced_at: p.leadId ? now : null,
+    kommo_error: p.leadId ? null : (p.error || 'sin lead_id'),
+  }));
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/meta_leads?on_conflict=id`, {
+    method: 'POST',
+    headers: headers({ Prefer: 'resolution=merge-duplicates,return=minimal' }),
+    body: JSON.stringify(rows),
+  });
+  if (!r.ok) throw new Error(`Supabase marcar Meta -> HTTP ${r.status}: ${await r.text()}`);
+  return rows.filter((x) => x.kommo_lead_id).length;
+}
+
+/**
+ * Leads de Meta que ya existen como contacto en Kommo por otra via (ticket de
+ * Zoho con el mismo correo o telefono). Sirve para no crear un lead duplicado
+ * de una persona que ya esta en el CRM.
+ */
+export async function getMetaLeadsYaEnZoho({ since } = {}) {
+  requireEnv();
+  const url =
+    `${SUPABASE_URL}/rest/v1/rpc/meta_leads_solapados`;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ p_since: since }),
+  });
+  if (!r.ok) throw new Error(`Supabase solapados -> HTTP ${r.status}: ${await r.text()}`);
+  return r.json();
 }

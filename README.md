@@ -68,6 +68,121 @@ node --env-file=.env sync.mjs enrich open  # rellena montos/plan del pipeline ac
 node --env-file=.env sync.mjs incremental  # solo lo modificado desde el último sync
 ```
 
+## Kommo CRM (leads)
+
+Cada ticket nuevo de Zoho se crea como **lead** en Kommo, en la misma corrida del
+sync incremental.
+
+| Destino | Valor |
+|---|---|
+| Cuenta | `segurosvenezuelait.kommo.com` (id 36827351) |
+| Embudo | **VENTAS** (`14251835`) |
+| Etapa | **cliente por atender** (`110051287`) |
+| Etiqueta | `ZohoDesk` |
+
+El embudo y la etapa se resuelven **por nombre** en cada corrida, así que
+renombrar o reordenar etapas en Kommo no rompe nada (se pueden forzar con
+`KOMMO_PIPELINE_ID` / `KOMMO_STATUS_ID`).
+
+Cada lead lleva el contacto del ticket (Kommo fusiona si ya existe) y una **nota**
+con número de ticket, etapa en Zoho, canal, asesor, plan y enlace directo al
+ticket.
+
+### Corte e idempotencia
+
+- `sync_state.kommo_since` es el **corte**: no se envían tickets creados antes.
+  Actualmente **2026-08-01** — el histórico previo (~12.250 tickets) no se migra.
+- `tickets.kommo_lead_id` guarda el lead creado. Un ticket con lead **nunca** se
+  reenvía, así que el sync puede correr las veces que sea sin duplicar.
+- Estado y auditoría: vista `kommo_sync_status`.
+
+### Control de duplicados
+
+Zoho abre **varios tickets para la misma solicitud**, y sin control cada uno
+generaba un lead. Antes de crear nada se aplican dos filtros (`db/dedup.sql`):
+
+1. **Contra lo ya creado** — `tickets_ya_en_kommo()`: si un ticket equivalente
+   ya tiene lead, el nuevo se *vincula* a ese lead en vez de crear otro.
+2. **Dentro del mismo lote** — si dos tickets nuevos son equivalentes, solo uno
+   crea el lead y el resto lo heredan.
+
+La clave de deduplicación es `asunto + contacto + titular`
+(`ticket_dedup_key()`). **El titular es imprescindible**: hay asuntos con cédula
+placeholder (`V-00000000`) que se repiten entre personas distintas, y agrupar
+solo por asunto + contacto fusionaba clientes que no son la misma persona.
+
+Auditoría: la vista `kommo_duplicados` lista los grupos que generaron más de un
+lead. **Debe estar vacía.**
+
+### Limpieza (`limpiar-kommo.mjs`)
+
+```bash
+node --env-file=.env limpiar-kommo.mjs --dry-run   # informa, no toca nada
+node --env-file=.env limpiar-kommo.mjs            # aplica
+```
+
+Etiqueta los leads sobrantes como `duplicado`, reapunta sus tickets al lead que
+se conserva, normaliza los teléfonos a `+58` y añade `MetaAds` a los leads que
+entraron por ambas fuentes.
+
+> ⚠️ **La API de Kommo no permite borrar leads** (`Allow: GET, PATCH` en
+> `/api/v4/leads`). El borrado final es manual: filtrar por la etiqueta
+> `duplicado` en la interfaz y eliminar. El script deja ese trabajo listo.
+
+```bash
+cd sync
+node --env-file=.env sync.mjs kommo-init 2026-08-01T00:00:00Z  # fija el corte
+node --env-file=.env sync.mjs kommo --dry-run                  # ver payloads, no escribe
+node --env-file=.env sync.mjs kommo --limit=1000               # crear leads pendientes
+```
+
+Aplicar una vez `db/kommo.sql` (columnas de control + vista). Secrets nuevos:
+`KOMMO_SUBDOMAIN`, `KOMMO_LONG_LIVED_TOKEN`.
+
+> El token de larga duración vence el **2027-10-30**. Hay que renovarlo antes.
+
+## Leads de Meta (Instagram/Facebook)
+
+Segunda fuente del pipeline. Marketing recibe los formularios de Meta en una
+hoja de Google; el sync la replica en Supabase y crea los leads en Kommo.
+
+```
+Meta Lead Ads ──▶ Hoja de Google ──(sync)──▶ Supabase (meta_leads) ──▶ Kommo
+```
+
+| | |
+|---|---|
+| Hoja | `1jUy4z0CPGV3DkF28goP8rqxL9qUZSJPMh3H6MwwPhiE` (dueña: `alessandra.publithink@gmail.com`) |
+| Tabla | `public.meta_leads` — **RLS activo**, contiene datos personales |
+| Destino | embudo **VENTAS** / etapa **cliente por atender** / etiqueta `MetaAds` |
+| Corte | `sync_state.meta_since` = **2026-08-01** |
+
+- Se descarga por el endpoint de exportación a CSV, **sin credenciales**, porque
+  la hoja está compartida por enlace. Si se cierra el acceso público, hay que
+  compartirla con una cuenta de servicio y apuntar `META_SHEET_CSV_URL`.
+- El `id` de Meta (`l:...`) es la clave: garantiza que un lead no se cree dos veces.
+- **Anti-duplicado cruzado**: si la persona ya está en Kommo por un ticket de
+  Zoho (mismo correo, o mismos últimos 10 dígitos del teléfono), no se crea un
+  segundo lead — el registro se vincula al lead existente. Ver la función
+  `meta_leads_solapados()`.
+- Los teléfonos vienen con prefijo `p:` y en formatos mezclados; se normalizan a
+  `+58…` y el original queda en `telefono_raw`.
+- La nota del lead lleva la atribución completa: campaña, conjunto, anuncio,
+  formulario, plataforma y edad.
+
+```bash
+cd sync
+node --env-file=.env sync.mjs meta-init 2026-08-01T00:00:00Z  # fija el corte
+node --env-file=.env sync.mjs meta --dry-run                  # no escribe
+node --env-file=.env sync.mjs meta --limit=1000               # replica + crea
+```
+
+Aplicar una vez `db/meta_leads.sql`. Estado: vista `meta_sync_status`.
+
+> ⚠️ La hoja tiene permiso `anyone: commenter`: **cualquiera con el enlace** lee
+> nombre, fecha de nacimiento, teléfono y correo de más de mil personas. Conviene
+> restringirla y pasar a cuenta de servicio.
+
 ## Auto-actualización
 
 Ver [`docs/auto-actualizacion.md`](docs/auto-actualizacion.md). Resumen:

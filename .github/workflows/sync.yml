@@ -10,7 +10,7 @@ on:
       mode:
         description: 'Modo de sync'
         type: choice
-        options: [incremental, full, enrich]
+        options: [incremental, full, enrich, kommo, meta]
         default: incremental
 
 concurrency:
@@ -35,4 +35,8 @@ jobs:
           ZOHO_DEPARTMENT_ID: ${{ secrets.ZOHO_DEPARTMENT_ID }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          # Kommo CRM: el modo incremental crea los leads de los tickets nuevos
+          # en la misma corrida. Sin estas credenciales, ese paso se omite.
+          KOMMO_SUBDOMAIN: ${{ secrets.KOMMO_SUBDOMAIN }}
+          KOMMO_LONG_LIVED_TOKEN: ${{ secrets.KOMMO_LONG_LIVED_TOKEN }}
         run: node sync.mjs ${{ github.event.inputs.mode || 'incremental' }}
