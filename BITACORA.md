@@ -7,7 +7,7 @@ retomar el trabajo.
 - **Supabase:** proyecto `lwqqnnefywsjaatuyjma` · `seguros venezuela Project`
 - **Kommo:** `segurosvenezuelait.kommo.com` (cuenta 36827351)
 - **Dashboard del pipeline:** https://boosty-hub.github.io/seguros-venezuela/
-- **Dashboard del agente de IA:** `web/` (Next.js), local por ahora en `pnpm dev` (localhost:3000)
+- **Dashboard del agente de IA:** https://segurosvenezuela.netlify.app (Next.js, desplegado en Netlify, sitio `segurosvenezuela`, cuenta `segurosvenezuelait@gmail.com`) — también corre local con `pnpm dev` si hace falta.
 
 ---
 
@@ -85,13 +85,21 @@ login separado.
 | Webhook de Kommo → `kommo-webhook` | ✅ **activo** (id `47441283`), protegido con secret |
 | `runtime_config` (identidad, Kommo, verticales) | ✅ cargado |
 | Anthropic Managed Agent + Memory Stores | ❌ **bloqueado por saldo** — solo el Environment se creó |
-| Dashboard `web/` (Next.js) | ⚠️ **solo local**, `pnpm dev` en esta máquina — no está publicado en Netlify/Vercel todavía |
+| Dashboard `web/` (Next.js) | ✅ **desplegado en Netlify** — https://segurosvenezuela.netlify.app (sitio `segurosvenezuela`, team `segurosvenezuelait@gmail.com`, deploy automático desde `main`) |
 | Repo en GitHub | rama `main`, con todo el código del agente (`web/`, `agent/`, `supabase/functions`, `supabase/migrations`, `scripts/`) |
 
 En corto: el **backend del agente ya corre en producción** (recibe webhooks,
-los encola, los cronjobs están vivos), pero **no responde nada todavía**
-porque falta crédito de Anthropic, y el **panel de administración solo es
-visible desde esta máquina** hasta que se decida desplegarlo.
+los encola, los cronjobs están vivos) y el **dashboard ya es accesible
+públicamente**, pero **no responde nada todavía** porque falta crédito de
+Anthropic para terminar de crear el Managed Agent y los Memory Stores.
+
+**Nota sobre Netlify:** la cuenta trae, por defecto, "Visitor access" en
+`Private` a nivel de team para proyectos nuevos — hubo que entrar al proyecto
+`segurosvenezuela` puntualmente (no el default del team, ese solo aplica a
+proyectos futuros) y cambiar su visitor access a `Public` a mano desde el
+dashboard de Netlify; la API rechaza ese cambio con "Account is not eligible
+to update global access controls", así que si se crea otro sitio hay que
+repetir este paso manualmente.
 
 ---
 
