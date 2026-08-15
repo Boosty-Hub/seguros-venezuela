@@ -6,7 +6,11 @@ retomar el trabajo.
 - **Repo:** `Boosty-Hub/seguros-venezuela` (público), rama `main`
 - **Supabase:** proyecto `lwqqnnefywsjaatuyjma` · `seguros venezuela Project`
 - **Kommo:** `segurosvenezuelait.kommo.com` (cuenta 36827351)
-- **Dashboard del pipeline:** https://boosty-hub.github.io/seguros-venezuela/
+- **Dashboard del pipeline:** ~~https://boosty-hub.github.io/seguros-venezuela/~~ — dado de baja
+  (2026-08-15): GitHub Pages desactivado y su workflow (`.github/workflows/pages.yml`)
+  borrado. El embudo/kanban de Zoho ahora vive dentro del dashboard del agente,
+  en `/pipeline` (ver más abajo). La carpeta `dashboard/` sigue en el repo por
+  si hace falta reactivarlo (`gh api repos/Boosty-Hub/seguros-venezuela/pages`).
 - **Dashboard del agente de IA:** https://segurosvenezuela.netlify.app (Next.js, desplegado en Netlify, sitio `segurosvenezuela`, cuenta `segurosvenezuelait@gmail.com`) — también corre local con `pnpm dev` si hace falta.
 
 ---
