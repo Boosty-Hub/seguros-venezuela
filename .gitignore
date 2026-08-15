@@ -1,6 +1,21 @@
 node_modules/
 .env
+.env.local
+.env*.local
 sync/.env
 *.log
 .DS_Store
 dashboard/config.local.js
+
+# --- agente de IA (web/ + supabase/functions) ---
+.next/
+out/
+dist/
+build/
+*.tsbuildinfo
+.vercel
+.netlify
+agent/system-prompt.md
+supabase/.branches
+supabase/.temp
+supabase/.env

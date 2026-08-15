@@ -6,7 +6,92 @@ retomar el trabajo.
 - **Repo:** `Boosty-Hub/seguros-venezuela-pipeline` (privado), rama `main`
 - **Supabase:** proyecto `lwqqnnefywsjaatuyjma` · `seguros venezuela Project`
 - **Kommo:** `segurosvenezuelait.kommo.com` (cuenta 36827351)
-- **Dashboard:** https://boosty-hub.github.io/seguros-venezuela-pipeline/
+- **Dashboard del pipeline:** https://boosty-hub.github.io/seguros-venezuela-pipeline/
+- **Dashboard del agente de IA:** `web/` (Next.js), local por ahora en `pnpm dev` (localhost:3000)
+
+---
+
+## Agente de IA en Kommo (Sofi) — Estado al 2026-08-15
+
+Se integró en este mismo repo la maquinaria del template `Boosty-Hub/Template-Agent-kommo`
+(carpetas `web/`, `agent/`, `supabase/functions/*`, `supabase/migrations/*`) para
+construir un agente de IA (Claude) que responde mensajes entrantes de Kommo
+(WhatsApp/Instagram). Documentación de referencia del template en `agent-docs/`.
+
+**Hecho:**
+- 48 migraciones aplicadas + 9 Edge Functions desplegadas (`verify_jwt=false`) +
+  8 cron jobs activos, en el mismo proyecto Supabase del pipeline (sin choque de
+  tablas: `leads/messages/drafts/verticals/...` vs `tickets/meta_leads/sync_log`).
+- `pgvector`, `pg_cron`, `pg_net` habilitados.
+- Webhook de Kommo creado (id `47441283`) → `kommo-webhook`, eventos
+  `add_lead`/`update_lead`/`add_message`, protegido con `KOMMO_WEBHOOK_SECRET`
+  (guardado como secret de Supabase, no en texto plano en el repo).
+- `runtime_config` cargado: identidad (operador **"Asesora Sofi"**), modelo
+  **claude-haiku-4-5** para clasificador Y agente de respuesta, credenciales de
+  Kommo (mismo token que ya usa `sync/`, tiene los scopes de mensajería
+  `send_external_messages`/`list_external_messages`).
+- **8 verticales de negocio** sembradas en la tabla `verticals` (salud
+  individual/colectiva, vida, patrimonial, automóvil, empresarial, mascotas,
+  siniestro/reclamo) + las 3 universales del template (`general`,
+  `engagement_social`, `hate_sarcasmo`). Todas con `requires_review=true` salvo
+  `engagement_social` (modo sombra conservador).
+- System prompt inicial escrito en `agent/system-prompt.md` (gitignored, es
+  identidad de negocio) usando contexto real de segurosvenezuela.com (70+ años,
+  "Más que una compañía, somos compañía", productos por línea, call center
+  `0501 SV INFORMA`). El bot "Sofi" del sitio real corre en una plataforma
+  externa (Aivo/AgentBot) sin relación con este agente — no se pudo interactuar
+  con él (requiere navegador, no hay tool de browsing en esta sesión).
+- **Limpieza de voseo**: el template completo (~100 archivos: UI del dashboard,
+  prompts reales de `process-inbound`/`generate-response`/`dreams-run`, tools
+  en `agent_tools`, docs) traía voseo rioplatense. Se convirtió TODO a tuteo
+  venezolano/latinoamericano — incluye el `CORE_SCAFFOLD` (el prompt fijo que
+  se envía a Claude en cada sesión) y los prompts del clasificador.
+- `kommo_publish_config`: `agent_enabled=true`, **`publishing_enabled=false`**
+  (modo sombra por defecto — genera pero no envía), `bypass_review=false`.
+  Tools de CRM/Shopify/BCV quedan desactivadas por gate hasta que se decida
+  activarlas (Fase de tools del plan).
+
+**Bloqueado:**
+- **La cuenta de Anthropic no tiene crédito** ("Your credit balance is too
+  low"). El Environment ya se creó (`env_01Y4Hq11zwfoZSmaf1deLS1p`), pero
+  crear el Managed Agent + los 2 Memory Stores falla hasta que se cargue
+  saldo en console.anthropic.com → Plans & Billing.
+- Para terminar el aprovisionamiento una vez haya crédito: `node
+  --env-file=.env.local --env-file=sync/.env scripts/provision-agent.mjs`
+  (crea Environment/Agent/Memory Stores que falten y guarda los IDs en
+  `runtime_config`; es idempotente, no duplica lo ya creado).
+
+**Módulo nuevo: `/pipeline`.** El dashboard del agente (`web/`) ahora tiene una
+sección "Pipeline Zoho" (menú lateral, grupo Operación) que muestra el mismo
+embudo/kanban/KPIs que el dashboard público de siempre (`dashboard/`, sin
+tocar) — mismas vistas de Supabase (`v_kpis`, `v_funnel`, `v_channel`,
+`v_agent`), sin tablas nuevas. Para no tener que saltar entre dos paneles con
+login separado.
+
+**Pendiente después de eso:**
+1. Probar el pipeline completo con mensajes reales (modo sombra: revisar
+   drafts en `/inbox`, nada se envía al cliente todavía).
+2. Cargar `/voz` (ejemplos reales de conversaciones) y `/kb` (tarifarios,
+   condiciones, FAQs reales de las aseguradoras).
+3. Decidir criterio de salida del modo sombra y activar `publishing_enabled`.
+4. Publicar el dashboard en Netlify/Vercel cuando se quiera acceso fuera de
+   esta máquina (hoy corre local con `pnpm dev` en `web/`).
+
+### Qué está desplegado de verdad (2026-08-15, fin de sesión)
+
+| Pieza | Estado |
+|---|---|
+| Supabase (migraciones, Edge Functions, cron, extensiones) | ✅ **en producción**, proyecto `lwqqnnefywsjaatuyjma` |
+| Webhook de Kommo → `kommo-webhook` | ✅ **activo** (id `47441283`), protegido con secret |
+| `runtime_config` (identidad, Kommo, verticales) | ✅ cargado |
+| Anthropic Managed Agent + Memory Stores | ❌ **bloqueado por saldo** — solo el Environment se creó |
+| Dashboard `web/` (Next.js) | ⚠️ **solo local**, `pnpm dev` en esta máquina — no está publicado en Netlify/Vercel todavía |
+| Repo en GitHub | rama `main`, con todo el código del agente (`web/`, `agent/`, `supabase/functions`, `supabase/migrations`, `scripts/`) |
+
+En corto: el **backend del agente ya corre en producción** (recibe webhooks,
+los encola, los cronjobs están vivos), pero **no responde nada todavía**
+porque falta crédito de Anthropic, y el **panel de administración solo es
+visible desde esta máquina** hasta que se decida desplegarlo.
 
 ---
 
@@ -53,6 +138,21 @@ Leads en Kommo: **1.053 reales** (613 Zoho + 458 Meta − 18 compartidos) más
 
 ---
 
+## Estado al 2026-08-15
+
+**Filtro de Asesor en el ingreso Zoho → Kommo.** Solo migran tickets cuyo
+campo `Asesor` (customField de Zoho Desk) valga "No tengo", "Sin Asesor" o
+"Sin Asesor (KG)" (variantes de mayúsculas/espacios toleradas vía `ilike`
+comodín). El resto — asesor con nombre real o campo vacío — ya no entra al
+CRM. Implementado en `sync/lib/supa.mjs` (`FILTRO_SIN_ASESOR`,
+`getTicketsPendingKommo`).
+
+Retroactivo: `sync/revisar-asesor-kommo.mjs` etiquetó **205 leads** ya
+existentes en Kommo (de 1111 tickets que no cumplían la regla; los otros 906
+ya no tenían lead vivo — fusionados o borrados en la limpieza previa) con la
+etiqueta `revisar-asesor`, para decidir a mano si se eliminan desde la
+interfaz (la API de Kommo no borra, ver trampa nº2).
+
 ## PENDIENTE
 
 1. **Borrar los 172 leads etiquetados `duplicado`** en la interfaz de Kommo
@@ -68,6 +168,10 @@ Leads en Kommo: **1.053 reales** (613 Zoho + 458 Meta − 18 compartidos) más
    el **asesor**: los tickets de Zoho traen el correo del intermediario
    (`asesor@...`) en el campo de contacto, no el del cliente final. Si el
    vendedor espera ver al asegurado, hay que mapear desde `titular`.
+4. **Decidir qué hacer con los 205 leads `revisar-asesor`** (ver "Estado al
+   2026-08-15" arriba): filtrar por esa etiqueta en Kommo y eliminarlos a mano
+   si se confirma que no deben estar, o quitarles la etiqueta si alguno se
+   decide conservar.
 4. **Latencia real ~1 hora**, no 5 minutos (ver más abajo). Si comercial necesita
    responder en minutos, hace falta el webhook de Zoho.
 5. **Leer todas las pestañas de la hoja.** Hoy solo se lee la primera. Con un

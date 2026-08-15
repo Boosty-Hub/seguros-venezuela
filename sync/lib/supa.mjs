@@ -132,8 +132,18 @@ export async function getKommoState() {
 }
 
 /**
+ * Filtro Postgrest (OR, ilike) que solo deja pasar tickets "sin asesor real":
+ * el campo Asesor de Zoho vale "No tengo", "Sin Asesor" o "Sin Asesor (KG)"
+ * (con variantes de mayusculas/espacios). El resto de tickets SI tienen un
+ * asesor/corredor asignado y no deben entrar al CRM.
+ */
+const FILTRO_SIN_ASESOR = 'or=(asesor.ilike.*no*tengo*,asesor.ilike.*sin*asesor*)';
+
+/**
  * Tickets que todavia no tienen lead en Kommo y son POSTERIORES al corte.
- * El corte (kommo_since) es lo que evita volcar el historico al CRM.
+ * El corte (kommo_since) es lo que evita volcar el historico al CRM. Ademas
+ * solo pasan los tickets sin asesor asignado (ver FILTRO_SIN_ASESOR): los que
+ * tienen un asesor/corredor real no se migran.
  */
 export async function getTicketsPendingKommo({ since, limit = 200 } = {}) {
   requireEnv();
@@ -148,10 +158,36 @@ export async function getTicketsPendingKommo({ since, limit = 200 } = {}) {
     `&kommo_lead_id=is.null` +
     `&created_time=gte.${encodeURIComponent(since)}` +
     `&is_spam=is.false` +
+    `&${FILTRO_SIN_ASESOR}` +
     `&order=created_time.asc&limit=${limit}`;
   const r = await fetch(url, { headers: headers() });
   if (!r.ok) throw new Error(`Supabase pendientes Kommo -> HTTP ${r.status}: ${await r.text()}`);
   return r.json();
+}
+
+/**
+ * Tickets YA enviados a Kommo (tienen lead) cuyo Asesor NO cumple el filtro
+ * de "sin asesor" (ver FILTRO_SIN_ASESOR) -- incluye asesor con nombre real Y
+ * asesor null/vacio (nunca se enriquecio o el campo viene sin valor). Son los
+ * que se migraron ANTES de activar el filtro y hay que revisar/etiquetar en
+ * Kommo, porque segun la regla actual no deberian haber entrado.
+ */
+export async function getTicketsKommoConAsesor({ limit = 20000 } = {}) {
+  requireEnv();
+  const url =
+    `${SUPABASE_URL}/rest/v1/tickets?select=id,ticket_number,asesor,kommo_lead_id` +
+    `&kommo_lead_id=not.is.null` +
+    `&or=(asesor.is.null,and(asesor.not.ilike.*no*tengo*,asesor.not.ilike.*sin*asesor*))`;
+  const PAGE = 1000;
+  const out = [];
+  for (let from = 0; from < limit; from += PAGE) {
+    const r = await fetch(url, { headers: headers({ Range: `${from}-${from + PAGE - 1}` }) });
+    if (!r.ok) throw new Error(`Supabase con-asesor -> HTTP ${r.status}: ${await r.text()}`);
+    const page = await r.json();
+    out.push(...page);
+    if (page.length < PAGE) break;
+  }
+  return out;
 }
 
 /** Graba el lead_id devuelto por Kommo (o el error) en cada ticket. */
