@@ -3,10 +3,10 @@
 Registro de qué se hizo, dónde quedó y qué falta. **Leer esto primero** al
 retomar el trabajo.
 
-- **Repo:** `Boosty-Hub/seguros-venezuela-pipeline` (privado), rama `main`
+- **Repo:** `Boosty-Hub/seguros-venezuela` (público), rama `main`
 - **Supabase:** proyecto `lwqqnnefywsjaatuyjma` · `seguros venezuela Project`
 - **Kommo:** `segurosvenezuelait.kommo.com` (cuenta 36827351)
-- **Dashboard del pipeline:** https://boosty-hub.github.io/seguros-venezuela-pipeline/
+- **Dashboard del pipeline:** https://boosty-hub.github.io/seguros-venezuela/
 - **Dashboard del agente de IA:** `web/` (Next.js), local por ahora en `pnpm dev` (localhost:3000)
 
 ---
