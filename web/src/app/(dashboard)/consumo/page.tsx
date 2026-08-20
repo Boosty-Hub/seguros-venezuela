@@ -8,6 +8,7 @@ import { BillingFlow, type BillingPoint } from "./billing-flow";
 import { CostCalculator, type CalculatorData, type TokenProfile } from "./cost-calculator";
 import { ModelsPanel } from "./models-panel";
 import { ContextPanel } from "./context-panel";
+import { UsageCapsPanel } from "./usage-caps-panel";
 import { configValues } from "@/lib/runtime-config";
 import { MODEL_KEYS } from "@/lib/model-config";
 import { AI_PRICING, CMA_RUNTIME_USD_PER_HOUR } from "@/lib/ai-pricing";
@@ -115,11 +116,48 @@ export default async function ConsumoPage({
 
   const showBackfillBanner = (draftsWithSession ?? 0) > (usageGenResp ?? 0);
 
+  // ---- Tope de consumo: gasto de hoy/mes (UTC, mismo criterio que
+  // alerts-scan/detectAndEnforceUsageCaps), topes configurados, y si el
+  // agente está apagado por haberlos superado. ----
+  const now = new Date();
+  const dayStartIso = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
+  const monthStartIso = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+  const [{ data: dayRows }, { data: monthRows }, capsCfg, { data: pubCfg }, { count: openCapAlerts }] =
+    await Promise.all([
+      supabase.from("usage_events").select("estimated_cost_usd").gte("created_at", dayStartIso),
+      supabase.from("usage_events").select("estimated_cost_usd").gte("created_at", monthStartIso),
+      configValues(["USAGE_DAILY_CAP_USD", "USAGE_MONTHLY_CAP_USD"]),
+      supabase.from("kommo_publish_config").select("agent_enabled").eq("is_active", true).maybeSingle(),
+      supabase
+        .from("alerts")
+        .select("id", { count: "exact", head: true })
+        .eq("kind", "usage_cap_exceeded")
+        .is("acknowledged_at", null),
+    ]);
+  const dailySpendToday = (dayRows ?? []).reduce((s, r) => s + Number(r.estimated_cost_usd ?? 0), 0);
+  const monthlySpendNow = (monthRows ?? []).reduce((s, r) => s + Number(r.estimated_cost_usd ?? 0), 0);
+  const dailyCapUsd = capsCfg.USAGE_DAILY_CAP_USD ? Number(capsCfg.USAGE_DAILY_CAP_USD) : null;
+  const monthlyCapUsd = capsCfg.USAGE_MONTHLY_CAP_USD ? Number(capsCfg.USAGE_MONTHLY_CAP_USD) : null;
+  const agentEnabledNow = pubCfg?.agent_enabled !== false;
+  const stoppedByCap = (openCapAlerts ?? 0) > 0;
+
+  const usageCapsPanel = (
+    <UsageCapsPanel
+      dailySpend={dailySpendToday}
+      monthlySpend={monthlySpendNow}
+      initialDailyCap={dailyCapUsd}
+      initialMonthlyCap={monthlyCapUsd}
+      agentEnabled={agentEnabledNow}
+      stoppedByCap={stoppedByCap}
+    />
+  );
+
   // ---- EmptyState ----
   if (daily.length === 0 && heatmap.length === 0) {
     return (
       <PageShell title="Consumo" description="Gasto estimado del agente — tokens, runtime y costo por componente.">
         {showBackfillBanner && <BackfillBanner />}
+        {usageCapsPanel}
         <EmptyState
           title="Sin datos de consumo aún"
           description="Los datos aparecen cuando el agente procesa mensajes. Si ya hay sesiones históricas, importálas con el botón de arriba."
@@ -452,6 +490,8 @@ export default async function ConsumoPage({
       }
     >
       {showBackfillBanner && <BackfillBanner />}
+
+      {usageCapsPanel}
 
       {/* KPIs */}
       <StatRow>

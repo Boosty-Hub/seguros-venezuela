@@ -180,6 +180,10 @@ type PublishFilters = {
   agentOffFieldId: number | null;
   commentSourceIds: Set<number>;
   respondToComments: boolean;
+  // Kill switch global (incluye el que dispara alerts-scan al superar un tope
+  // de consumo diario/mensual). false = ni siquiera se clasifica (ahorra el
+  // costo de Haiku, no solo el de generar la respuesta).
+  agentEnabled: boolean;
 };
 let publishFiltersCache: (PublishFilters & { loadedAt: number }) | null = null;
 
@@ -191,7 +195,7 @@ async function getPublishFilters(): Promise<PublishFilters> {
   const { data, error } = await supabase
     .from("kommo_publish_config")
     .select(
-      "ignored_channels, ignored_stage_ids, respond_to_images, respond_to_documents, respond_to_audio, agent_off_field_id, comment_source_ids, respond_to_comments"
+      "ignored_channels, ignored_stage_ids, respond_to_images, respond_to_documents, respond_to_audio, agent_off_field_id, comment_source_ids, respond_to_comments, agent_enabled"
     )
     .eq("is_active", true)
     .maybeSingle();
@@ -204,6 +208,7 @@ async function getPublishFilters(): Promise<PublishFilters> {
       agentOffFieldId: null,
       commentSourceIds: new Set(),
       respondToComments: false,
+      agentEnabled: true, // fail-open: un error de lectura no debe apagar el agente
       loadedAt: Date.now(),
     };
     return publishFiltersCache;
@@ -226,7 +231,9 @@ async function getPublishFilters(): Promise<PublishFilters> {
   );
   // Gate maestro de comentarios (0048): default/columna ausente = OFF.
   const respondToComments = data?.respond_to_comments === true;
-  publishFiltersCache = { channels, stages, media, agentOffFieldId, commentSourceIds, respondToComments, loadedAt: Date.now() };
+  // Kill switch global: default ON (columna ausente pre-migración = no bloquear).
+  const agentEnabled = data?.agent_enabled !== false;
+  publishFiltersCache = { channels, stages, media, agentOffFieldId, commentSourceIds, respondToComments, agentEnabled, loadedAt: Date.now() };
   return publishFiltersCache;
 }
 
@@ -798,6 +805,20 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
 
       // Clasificar solo inbound
       if (direction !== "inbound") continue;
+
+      // Kill switch global (agent_enabled=false): lo primero que se chequea,
+      // antes que cualquier otro gate — corta ANTES de gastar en clasificar
+      // (no solo antes de responder). Lo apaga a mano el operador, o
+      // automáticamente alerts-scan al superar un tope de consumo diario/
+      // mensual (ver detectAndEnforceUsageCaps). No se toca hasta que un
+      // humano lo reactive en /agent.
+      if (!filters.agentEnabled) {
+        await supabase
+          .from("messages")
+          .update({ ignored: true, ignored_reason: "agent_disabled" })
+          .eq("id", msg.id);
+        continue;
+      }
 
       // Apagar Agente: si el campo interruptor del lead está encendido en Kommo,
       // el agente NO responde a ese lead (la asesora tomó el caso). Es lo primero

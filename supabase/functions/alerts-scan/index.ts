@@ -9,6 +9,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { isBusinessHours, type BusinessHoursConfig } from "../_shared/business-hours.ts";
+import { loadConfig, type ConfigReader } from "../_shared/config.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -374,6 +375,76 @@ async function detectInboundSilence(): Promise<AlertInput[]> {
   ];
 }
 
+// ---- Tope de consumo (diario/mensual) → apaga el agente COMPLETO ----
+// Configurable desde /consumo (runtime_config USAGE_DAILY_CAP_USD /
+// USAGE_MONTHLY_CAP_USD, vacío/0 = sin tope). Al superarse, apaga
+// kommo_publish_config.agent_enabled=false — el mismo kill switch que ya
+// chequean process-inbound (ni clasifica) y generate-response (ni genera).
+// NO se auto-reactiva: un humano debe volver a prenderlo desde Configuración
+// → Identidad, a propósito (un tope superado es una decisión, no un blip).
+async function detectAndEnforceUsageCaps(cfg: ConfigReader): Promise<AlertInput[]> {
+  const dailyCap = parseFloat(cfg.get("USAGE_DAILY_CAP_USD") ?? "");
+  const monthlyCap = parseFloat(cfg.get("USAGE_MONTHLY_CAP_USD") ?? "");
+  const hasDailyCap = Number.isFinite(dailyCap) && dailyCap > 0;
+  const hasMonthlyCap = Number.isFinite(monthlyCap) && monthlyCap > 0;
+  if (!hasDailyCap && !hasMonthlyCap) return [];
+
+  // Calendario UTC (simple y predecible) — un tope de gasto no necesita
+  // precisión de zona horaria del negocio, solo una ventana estable.
+  const now = new Date();
+  const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
+  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+
+  const [{ data: dayRows }, { data: monthRows }] = await Promise.all([
+    supabase.from("usage_events").select("estimated_cost_usd").gte("created_at", dayStart),
+    supabase.from("usage_events").select("estimated_cost_usd").gte("created_at", monthStart),
+  ]);
+  const dailySpend = (dayRows ?? []).reduce((s, r) => s + Number(r.estimated_cost_usd ?? 0), 0);
+  const monthlySpend = (monthRows ?? []).reduce((s, r) => s + Number(r.estimated_cost_usd ?? 0), 0);
+
+  const dailyExceeded = hasDailyCap && dailySpend >= dailyCap;
+  const monthlyExceeded = hasMonthlyCap && monthlySpend >= monthlyCap;
+  if (!dailyExceeded && !monthlyExceeded) return [];
+
+  const { data: pubCfg } = await supabase
+    .from("kommo_publish_config")
+    .select("agent_enabled")
+    .eq("is_active", true)
+    .maybeSingle();
+  // Ya está apagado (por esto mismo o a mano) → no repetir la alerta cada 5 min.
+  if (pubCfg?.agent_enabled === false) return [];
+
+  const { error: offErr } = await supabase
+    .from("kommo_publish_config")
+    .update({ agent_enabled: false })
+    .eq("is_active", true);
+  if (offErr) {
+    console.error("detectAndEnforceUsageCaps: no se pudo apagar el agente:", offErr.message);
+    return [];
+  }
+
+  const which =
+    dailyExceeded && monthlyExceeded ? "diario y mensual" : dailyExceeded ? "diario" : "mensual";
+  return [
+    {
+      kind: "usage_cap_exceeded",
+      severity: "critical",
+      title: `Agente APAGADO: tope de consumo ${which} alcanzado`,
+      description:
+        `Gasto de hoy: $${dailySpend.toFixed(2)}${hasDailyCap ? ` (tope $${dailyCap.toFixed(2)})` : ""}. ` +
+        `Gasto del mes: $${monthlySpend.toFixed(2)}${hasMonthlyCap ? ` (tope $${monthlyCap.toFixed(2)})` : ""}. ` +
+        `El agente se apagó por completo (no clasifica ni responde a NADA) hasta que lo reactives a mano en ` +
+        `Configuración → Identidad → Encendido y publicación.`,
+      ref_table: "kommo_publish_config",
+      metadata: {
+        daily_spend: dailySpend, monthly_spend: monthlySpend,
+        daily_cap: hasDailyCap ? dailyCap : null, monthly_cap: hasMonthlyCap ? monthlyCap : null,
+        daily_exceeded: dailyExceeded, monthly_exceeded: monthlyExceeded,
+      },
+    },
+  ];
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "GET") {
     return new Response("alerts-scan OK", { status: 200 });
@@ -384,14 +455,16 @@ Deno.serve(async (req: Request) => {
 
   try {
     const config = await getConfig();
-    const [failed, review, regression, silence, providerCreditResolved] = await Promise.all([
+    const runtimeCfg = await loadConfig(supabase);
+    const [failed, review, regression, silence, capsExceeded, providerCreditResolved] = await Promise.all([
       detectFailedDrafts(),
       detectHumanReviewNeeded(),
       detectOutcomesRegression(),
       detectInboundSilence(),
+      detectAndEnforceUsageCaps(runtimeCfg),
       resolveRecoveredProviderCredit(),
     ]);
-    const newAlerts = [...failed, ...review, ...regression, ...silence];
+    const newAlerts = [...failed, ...review, ...regression, ...silence, ...capsExceeded];
 
     for (const a of newAlerts) {
       try {
@@ -411,6 +484,7 @@ Deno.serve(async (req: Request) => {
           human_review_needed: review.length,
           outcomes_regression: regression.length,
           inbound_silence: silence.length,
+          usage_cap_exceeded: capsExceeded.length,
           provider_credit_resolved: providerCreditResolved,
         },
       }),

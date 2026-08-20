@@ -15,8 +15,12 @@ export type PublishState = {
 
 const REVIEW_OPTS: { id: ReviewMode; label: string; hint: string }[] = [
   { id: "todo", label: "Todo a revisión", hint: "Cada respuesta espera aprobación humana antes de publicarse." },
-  { id: "normal", label: "Normal", hint: "Publica directo, salvo lo que la clasificación mande a revisión." },
-  { id: "sin", label: "Sin revisión", hint: "Publica SIEMPRE, aunque un mensaje entrara a revisión." },
+  { id: "normal", label: "Normal", hint: "Genera directo, salvo lo que la clasificación mande a revisión." },
+  {
+    id: "sin",
+    label: "Sin revisión",
+    hint: "El agente SIEMPRE genera una respuesta, aunque el mensaje fuera para revisión humana (hate/spam/baja confianza). Si Producción está apagada, sigue sin salir nada a Kommo — solo deja de bloquear la generación.",
+  },
 ];
 
 export function AgentPublishPanel({
@@ -58,11 +62,9 @@ export function AgentPublishPanel({
   }
 
   function setPublishing(publishing: boolean) {
-    // Al apagar publicación, "Sin revisión" deja de aplicar (bypass se fuerza
-    // false en el backend) → lo reflejamos volviendo a "Normal".
-    const reviewMode =
-      !publishing && state.reviewMode === "sin" ? "normal" : state.reviewMode;
-    persist({ ...state, publishing, reviewMode });
+    // "Sin revisión" es independiente de Producción/Validación — no se toca
+    // al cambiar el modo de publicación.
+    persist({ ...state, publishing });
   }
 
   return (
@@ -124,12 +126,11 @@ export function AgentPublishPanel({
         <p className="text-sm font-medium text-neutral-900">Revisión humana</p>
         <div className="inline-flex flex-wrap gap-1 rounded-lg bg-neutral-100 p-1">
           {REVIEW_OPTS.map((o) => {
-            const disabled = busy || (o.id === "sin" && !state.publishing);
             return (
               <button
                 key={o.id}
                 type="button"
-                disabled={disabled}
+                disabled={busy}
                 aria-pressed={state.reviewMode === o.id}
                 onClick={() => persist({ ...state, reviewMode: o.id })}
                 className={
@@ -146,7 +147,6 @@ export function AgentPublishPanel({
         </div>
         <p className="text-xs text-neutral-500">
           {REVIEW_OPTS.find((o) => o.id === state.reviewMode)?.hint}
-          {!state.publishing && " «Sin revisión» requiere Producción."}
         </p>
       </div>
 

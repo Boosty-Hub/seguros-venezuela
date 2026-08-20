@@ -9,6 +9,7 @@ import {
   TrendUp,
 } from "@/components/ui";
 import { BcvBanner } from "./bcv-banner";
+import { ControlTower } from "./control-tower";
 
 type BcvData = { rate: number; source: string; fetchedAt: string };
 
@@ -282,6 +283,7 @@ export function SidebarNav({
             {agentLabel}
           </p>
         )}
+        <ControlTower />
         <button
           type="button"
           onClick={toggle}
@@ -338,6 +340,7 @@ export function MobileNav({
           {bcv && (
             <BcvBanner rate={bcv.rate} source={bcv.source} fetchedAt={bcv.fetchedAt} variant="mini" />
           )}
+          <ControlTower />
           <button
             type="button"
             aria-label="Abrir menú"

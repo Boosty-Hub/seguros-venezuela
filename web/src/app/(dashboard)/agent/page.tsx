@@ -120,8 +120,10 @@ export default async function AgentPage({
   // Encendido y publicación: el tri-estado de Revisión fusiona auto_reply_mode +
   // bypass_review en un solo control (mismo mapeo que /api/agent/publish).
   const publishingEnabled = pubRes.data?.publishing_enabled === true;
+  // bypass_review es independiente de publishing_enabled — ver invariantes en
+  // /api/agent/publish. "Sin revisión" puede estar activo en modo sombra.
   const reviewMode: ReviewMode =
-    pubRes.data?.bypass_review === true && publishingEnabled
+    pubRes.data?.bypass_review === true
       ? "sin"
       : pubRes.data?.auto_reply_mode === "review_only"
         ? "todo"

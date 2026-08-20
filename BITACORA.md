@@ -39,10 +39,35 @@ to end**, verificado con mensajes reales el 2026-08-19:
   `fetchLeadHistory`) → agente de respuesta (Haiku 4.5, sesión CMA con
   `search_kb`) probados de punta a punta con mensajes sintéticos: clasifica
   bien, responde en tuteo venezolano, usa la KB.
-- **Sigue en modo sombra**: `publishing_enabled=false`, todas las verticales
-  de negocio con `requires_review=true` salvo `engagement_social`. Nada se
-  envía a un cliente real todavía — los drafts quedan en `/inbox` para
-  revisar. Falta decidir el criterio de salida de este modo.
+- **Sigue en modo sombra**: `publishing_enabled=false` — nada se envía a un
+  cliente real todavía, los drafts quedan en `/inbox` para revisar. Falta
+  decidir el criterio de salida de este modo.
+- **Sin revisión humana bloqueando nada** (a propósito, para poder chequear
+  cómo responde el agente a TODO mientras está en sombra): `bypass_review=true`
+  y las 11 verticales con `requires_review=false`/`auto_reply=true`. Se
+  descubrió y arregló una invariante rota: `bypass_review` ya NO depende de
+  `publishing_enabled` (antes solo tenía efecto si publicación estaba
+  encendida) — son dos interruptores independientes: bypass decide si la
+  revisión bloquea la GENERACIÓN, publishing decide si sale de verdad a
+  Kommo. Ver `/api/agent/publish`.
+- **Emoji seguros para Kommo/WhatsApp**: los simples de un símbolo (👋 👍 ❤️)
+  pasan bien; las secuencias compuestas (ZWJ, tono de piel, banderas) se
+  rompen. Dos capas: regla en el prompt + saneador de código en
+  `generate-response` (`sanitizeEmojiForKommo`) que las limpia siempre, pase
+  lo que pase el modelo.
+- **Tope de consumo diario/mensual** (`/consumo`, panel "Tope de consumo"):
+  configurable en USD (`runtime_config.USAGE_DAILY_CAP_USD` /
+  `USAGE_MONTHLY_CAP_USD`, vacío = sin tope). `alerts-scan` (cada 5 min) lo
+  revisa; si se supera, apaga `kommo_publish_config.agent_enabled=false` — el
+  agente para POR COMPLETO (ni clasifica, ver trampa #10) — y crea una alerta
+  crítica. No se reactiva solo: un humano debe prenderlo de nuevo. Probado en
+  vivo con un tope artificial de $0.01.
+- **Torre de control**: campana 🔔 en el header (sidebar desktop, header
+  mobile, embed) que abre un panel deslizable desde la derecha
+  (`control-tower.tsx` + `/api/control-tower`) con alertas activas, estado
+  del agente, consumo vs. tope y revisiones pendientes, todo con botones para
+  actuar sin salir del panel (reactivar agente, marcar alertas vistas). La
+  página `/alerts` sigue existiendo para el historial completo.
 - **KB ahora es por vertical** (antes era global): cada documento subido
   tiene `vertical_id` obligatorio (`kb_documents.vertical_id NOT NULL`);
   `search_kb` solo trae resultados de la vertical activa. Se sube desde
@@ -94,6 +119,8 @@ to end**, verificado con mensajes reales el 2026-08-19:
 9. La próxima vez que se edite el prompt en `/agent` y se guarde, el system
    prompt en Anthropic se resincroniza solo (recoge la limpieza del scaffold
    de esta sesión) — no requiere acción aparte.
+10. Definir topes de consumo reales en `/consumo` (hoy sin tope puesto —
+    quedó probado y limpiado tras la prueba en vivo).
 
 ### Vencimientos
 
@@ -212,6 +239,11 @@ eso se hace desde `/agent` en el dashboard).
    `*/N` en el campo día-del-mes (se resetea en el borde de mes). El hueco
    real desde la última corrida (`DREAMS_LAST_RUN`) compensa para no perder
    días.
+10. El kill switch `agent_enabled` (usado por el tope de consumo) solo lo
+    chequeaba `generate-response` — `process-inbound` seguía clasificando
+    (gastando Haiku) aunque el agente estuviera "apagado". Ahora
+    `process-inbound` también lo chequea (mismo campo, `kommo_publish_config
+    .agent_enabled`) y no clasifica nada si está en false.
 
 ---
 
@@ -239,4 +271,12 @@ eso se hace desde `/agent` en el dashboard).
   uno solo: `agent-prompt-core.mjs`). Unificados en un solo módulo de
   Configuración (`/agent`, 7 pestañas) los 5 módulos que antes eran rutas
   separadas: Agente, Kommo, Herramientas, Seguimiento, Ajustes — auditado sin
-  duplicación de funciones entre ellos. Usuarios queda aparte.
+  duplicación de funciones entre ellos. Usuarios queda aparte. Después, en la
+  misma fecha: publicación a Kommo confirmada apagada; revisión humana
+  desactivada del todo (`bypass_review=true` + verticales sin
+  `requires_review`), arreglando de paso la invariante que ataba bypass a
+  publishing; saneador de emoji para Kommo/WhatsApp (dos capas: prompt +
+  código); tope de consumo diario/mensual configurable en `/consumo` que
+  apaga el agente completo (clasificación incluida) al superarse; Torre de
+  Control (campana en el header, panel deslizable con alertas/estado/consumo/
+  revisiones pendientes).

@@ -1004,6 +1004,34 @@ Procede según tu system prompt: aplica los aprendizajes del bloque aprendizajes
 Tu MENSAJE FINAL debe ser SOLO el texto que se envía al lead. Sin preámbulo.`;
 }
 
+// ---------------- Saneador de emoji (compatibilidad Kommo/WhatsApp) ----------------
+// Kommo NO acepta bien TODO emoji: los simples de un solo codepoint (👋 👍 🎉
+// 📞 ⚠️ ✅ ❤️) pasan sin problema, pero las SECUENCIAS compuestas — con
+// Zero-Width-Joiner (familias 👨‍👩‍👧‍👦, "hombre de negocios" 🧑‍💼),
+// modificadores de tono de piel (👍🏽), y banderas de país (🇻🇪, par de
+// regional indicators) — se rompen o llegan mal al pasar por el puente
+// Kommo → WhatsApp Business API / Instagram. Doble capa de defensa: el
+// prompt (CORE_SCAFFOLD) le pide al modelo usar solo emoji simples, y esto
+// sanea el texto final pase lo que pase (el modelo puede no obedecer).
+const ZWJ = "‍";
+const SKIN_TONE_MODIFIERS = /[\u{1F3FB}-\u{1F3FF}]/gu;
+// Regional indicator symbols (banderas): siempre vienen de a pares.
+const REGIONAL_INDICATORS = /[\u{1F1E6}-\u{1F1FF}]{2}/gu;
+// Cualquier secuencia unida por ZWJ: se borra COMPLETA (no solo el ZWJ) para
+// no dejar emoji sueltos y desordenados donde el usuario esperaba uno solo
+// compuesto (ej. "🧑‍⚕️" mal saneado a medias se ve peor que borrado entero).
+const ZWJ_SEQUENCE = new RegExp(`[^\\s]*${ZWJ}[^\\s]*`, "gu");
+
+function sanitizeEmojiForKommo(text: string): string {
+  return text
+    .replace(ZWJ_SEQUENCE, "")
+    .replace(REGIONAL_INDICATORS, "")
+    .replace(SKIN_TONE_MODIFIERS, "") // deja el emoji base (tono default), quita solo el modificador
+    .replace(/[ \t]{2,}/g, " ") // colapsa espacios que quedaron dobles al borrar
+    .replace(/ \n/g, "\n")
+    .trim();
+}
+
 // ---------------- Orquestar sesión CMA ----------------
 type Outcome = {
   responseText: string;
@@ -1181,7 +1209,7 @@ async function runAgent(opts: {
   // Extraer SOLO lo que está dentro de <respuesta>...</respuesta>.
   // Si no hay tags, usar el último texto (fallback).
   const match = responseText.match(/<respuesta>([\s\S]*?)<\/respuesta>/i);
-  const clean = (match ? match[1] : responseText).trim();
+  const clean = sanitizeEmojiForKommo((match ? match[1] : responseText).trim());
 
   return {
     responseText: clean,
@@ -1243,12 +1271,14 @@ Deno.serve(async (req: Request) => {
     );
   }
 
-  // Bypass de review: solo tiene efecto si publishing está habilitado.
-  // No aplica al camino de revisión humana explícita (forceReview).
-  const bypass =
-    !forceReview &&
-    cfg?.bypass_review === true &&
-    cfg?.publishing_enabled === true;
+  // Bypass de review: ANTES exigía publishing_enabled=true (bypass solo tenía
+  // sentido si de verdad iba a publicar). Se desacopló a propósito: en modo
+  // sombra (publishing_enabled=false) queremos poder generar/ver la respuesta
+  // del agente para TODO mensaje —incluso los marcados para revisión humana—
+  // sin que nada la bloquee, aunque publish-to-kommo (gate independiente y
+  // duro sobre publishing_enabled) nunca la mande al cliente real. No aplica
+  // al camino de revisión humana explícita (forceReview).
+  const bypass = !forceReview && cfg?.bypass_review === true;
 
   // Cooldown / tope por lead (no aplica al camino de revisión humana explícita).
   const throttle: Throttle | undefined = forceReview
@@ -1498,7 +1528,9 @@ Deno.serve(async (req: Request) => {
               },
             ],
           });
-          const rawReply = (haikuRes.content[0]?.type === "text" ? haikuRes.content[0].text : "").trim();
+          const rawReply = sanitizeEmojiForKommo(
+            (haikuRes.content[0]?.type === "text" ? haikuRes.content[0].text : "").trim()
+          );
           if (rawReply) {
             // Cap duro 280 chars: cortar en el último espacio antes del límite.
             if (rawReply.length <= 280) {

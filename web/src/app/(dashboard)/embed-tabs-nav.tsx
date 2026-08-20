@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { NAV_GROUPS } from "./nav";
+import { ControlTower } from "./control-tower";
 
 const ENV_AGENT_LABEL = process.env.NEXT_PUBLIC_AGENT_LABEL || "Agente";
 
@@ -26,9 +27,10 @@ export function EmbedTabsNav({
         <div className="grid h-6 w-6 shrink-0 place-items-center rounded bg-brand text-brand-foreground text-xs font-semibold">
           {agentLabel.charAt(0).toUpperCase()}
         </div>
-        <span className="text-sm font-semibold tracking-tight text-neutral-900">
+        <span className="flex-1 text-sm font-semibold tracking-tight text-neutral-900">
           {agentLabel}
         </span>
+        <ControlTower />
       </div>
 
       {/* Tabs — los mismos módulos del sidebar, ahora horizontales */}

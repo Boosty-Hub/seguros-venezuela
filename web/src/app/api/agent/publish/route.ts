@@ -14,7 +14,11 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 // cliente no necesita conocer el salesbot ni el estado completo.
 //
 // INVARIANTES preservados (CLAUDE.md #4):
-//   - bypass_review solo puede quedar true si publishing_enabled=true.
+//   - bypass_review es independiente de publishing_enabled: bypass decide si
+//     la revisión humana bloquea la GENERACIÓN de la respuesta; publishing
+//     decide si esa respuesta sale de verdad a Kommo. Se puede tener bypass=ON
+//     con publishing=OFF (modo sombra sin filtro de revisión, para ver cómo
+//     respondería el agente a TODO, incluido lo marcado para revisión).
 //   - publish_from (línea de corte go-live) se estampa UNA sola vez, cuando el
 //     sistema queda por primera vez habilitado para publicar de verdad
 //     (publishing_enabled=true Y salesbot_id cargado Y publish_from null).
@@ -53,7 +57,7 @@ export async function POST(request: Request) {
 
   // review_mode: si viene en el patch se usa; si no, se deriva del estado actual.
   const currentReview: ReviewMode =
-    current?.bypass_review && current?.publishing_enabled
+    current?.bypass_review
       ? "sin"
       : current?.auto_reply_mode === "review_only"
         ? "todo"
@@ -66,8 +70,8 @@ export async function POST(request: Request) {
     agent_enabled: agentEnabled,
     publishing_enabled: publishing,
     auto_reply_mode: reviewMode === "todo" ? "review_only" : "auto",
-    // bypass solo puede quedar true con publishing on.
-    bypass_review: reviewMode === "sin" && publishing,
+    // Independiente de publishing: ver nota de invariantes arriba.
+    bypass_review: reviewMode === "sin",
   };
 
   // Go-live: estampar publish_from la primera vez que quede habilitado para
