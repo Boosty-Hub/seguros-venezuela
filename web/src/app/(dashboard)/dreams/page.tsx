@@ -122,7 +122,7 @@ export default async function DreamsPage({ searchParams }: { searchParams: Searc
   return (
     <PageShell
       title="Dreams"
-      description="Aprendizajes destilados de conversaciones. El análisis corre según la frecuencia elegida (el cron pasa a diario 3 AM UTC y respeta esa frecuencia)."
+      description="Aprendizajes destilados de conversaciones. El análisis corre a la frecuencia elegida abajo (el cron real cambia con el dropdown). Cada 30 días, un cron aparte consolida TODOS los aprendizajes activos en un único resumen (dedupe y contradicciones incluidos) — es lo que el agente realmente lee en cada respuesta."
       actions={
         <div className="flex flex-wrap items-center gap-2">
           {/* Acciones primarias: Run */}

@@ -8,6 +8,8 @@ const inputCls =
 
 export function AgentForm({
   initial,
+  liveSystemPrompt,
+  liveSystemPromptError,
 }: {
   initial: {
     operatorName: string;
@@ -15,7 +17,14 @@ export function AgentForm({
     agentLabel: string;
     systemPrompt: string;
   };
+  /** El system prompt COMPLETO leído en vivo del agente en Anthropic (operatorPrompt
+   * + maquinaria fija + tools ya sustituidos). null si el agente todavía no está
+   * aprovisionado. Es de SOLO LECTURA: es la única forma de saber con certeza qué
+   * hay adentro de Anthropic ahora mismo, sin recomponerlo localmente. */
+  liveSystemPrompt: string | null;
+  liveSystemPromptError: string | null;
 }) {
+  const [showFull, setShowFull] = useState(false);
   // Only the system prompt is controlled — the AI assistant edits it live.
   // The other fields stay uncontrolled (defaultValue) and submit normally.
   const [systemPrompt, setSystemPrompt] = useState(initial.systemPrompt);
@@ -120,6 +129,49 @@ export function AgentForm({
       >
         Guardar y sincronizar
       </button>
+
+      {/* System prompt COMPLETO, tal cual vive en Anthropic ahora mismo —
+          solo lectura, leído en vivo del agente (no recompuesto acá). Es la
+          única forma de saber con certeza qué hay adentro: lo de arriba es
+          SOLO la mitad editable (voz/identidad); esto es esa mitad + la
+          maquinaria fija (formato de salida, prioridades, seguridad, tools). */}
+      <div className="space-y-2 border-t border-neutral-200 pt-5">
+        <button
+          type="button"
+          onClick={() => setShowFull((v) => !v)}
+          className="text-sm font-medium text-neutral-700 underline decoration-neutral-300 underline-offset-2 hover:text-neutral-900"
+        >
+          {showFull ? "Ocultar" : "Ver"} el system prompt completo (solo lectura, tal cual está en Anthropic)
+        </button>
+        {showFull && (
+          <div className="space-y-2">
+            {liveSystemPromptError ? (
+              <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                No se pudo leer desde Anthropic: <span className="font-mono">{liveSystemPromptError}</span>
+              </p>
+            ) : liveSystemPrompt ? (
+              <>
+                <p className="text-xs text-neutral-500">
+                  Esto es EXACTAMENTE lo que Anthropic tiene guardado para este agente ahora mismo — tu prompt de
+                  arriba + la maquinaria fija (formato de salida, prioridades, seguridad, acciones de CRM ya
+                  resueltas) + los placeholders ya sustituidos. No es editable acá: si quieres cambiar algo, edita
+                  el prompt de arriba (la voz/identidad) y Guarda y sincroniza.
+                </p>
+                <textarea
+                  readOnly
+                  value={liveSystemPrompt}
+                  rows={20}
+                  className={inputCls + " font-mono leading-relaxed bg-neutral-50 text-neutral-600"}
+                />
+              </>
+            ) : (
+              <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                El agente todavía no está aprovisionado en Anthropic — no hay nada que leer todavía.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
     </form>
   );
 }

@@ -40,5 +40,5 @@ export async function POST(request: Request) {
     .eq("is_active", true);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  return NextResponse.redirect(new URL("/config/kommo?saved=1", request.url), { status: 303 });
+  return NextResponse.redirect(new URL("/agent?tab=kommo&kommo_saved=1", request.url), { status: 303 });
 }

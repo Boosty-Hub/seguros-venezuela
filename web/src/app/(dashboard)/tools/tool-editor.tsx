@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import type { AgentTool } from "./page";
+import type { AgentTool } from "./tools-body";
 import { Modal, Button, ConfirmDialog, Badge } from "@/components/ui";
 
 // Known runtime_config keys the operator might reference in headers.
@@ -990,7 +990,7 @@ function SystemToolsPanel({ tools }: { tools: AgentTool[] }) {
           <p className="text-xs text-neutral-500">
             El agente consulta el catálogo y vende sobre Shopify cuando una vertical o su voz se lo
             indica. Conecta la tienda en{" "}
-            <a href="/settings" className="font-medium text-violet-700 underline">
+            <a href="/agent?tab=ajustes" className="font-medium text-violet-700 underline">
               Configuración
             </a>{" "}
             y activa las capacidades en{" "}

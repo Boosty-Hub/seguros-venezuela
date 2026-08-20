@@ -50,7 +50,7 @@ const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, {
 });
 
 // ---------------- search_kb tool implementation ----------------
-async function runSearchKb(input: { query: string; limit?: number }) {
+async function runSearchKb(input: { query: string; limit?: number }, verticalId: string | null) {
   // 1) Embeber el query
   const embedRes = await fetch(`${SUPABASE_URL}/functions/v1/embed`, {
     method: "POST",
@@ -65,12 +65,14 @@ async function runSearchKb(input: { query: string; limit?: number }) {
   }
   const { embeddings } = (await embedRes.json()) as { embeddings: number[][] };
 
-  // 2) Llamar a RPC search_kb
+  // 2) Llamar a RPC search_kb — acotado a la vertical de la conversación
+  // (docs de esa vertical + los globales, nunca los de otra vertical).
   const { data, error } = await supabase.rpc("search_kb", {
     p_query_embedding: embeddings[0],
     p_query_text: input.query,
     p_limit: Math.min(input.limit ?? 5, 12),
     p_min_similarity: 0.15,
+    p_vertical_id: verticalId,
   });
   if (error) throw new Error(`search_kb: ${error.message}`);
 
@@ -604,6 +606,7 @@ async function reclaimStaleDrafts(msgIds: string[]): Promise<Set<string>> {
 type Batch = {
   leadId: string;
   messages: MsgRow[];
+  verticalId: string | null;
   vertical: { slug: string; auto_reply: boolean; requires_review: boolean };
 };
 
@@ -693,7 +696,7 @@ async function pickLeadBatch(
     if (msgs.length === 0) return null;
     const latest = msgs[msgs.length - 1];
     if (!latest.verticals) return null;
-    return { leadId: m.lead_id, messages: msgs.slice(-MAX_BATCH), vertical: latest.verticals };
+    return { leadId: m.lead_id, messages: msgs.slice(-MAX_BATCH), verticalId: latest.vertical_id ?? null, vertical: latest.verticals };
   }
 
   // --- Modo cola con debounce ---
@@ -818,7 +821,7 @@ async function pickLeadBatch(
     }
     const latest = msgs[msgs.length - 1];
     if (!latest.verticals) continue;
-    return { leadId, messages: msgs.slice(-MAX_BATCH), vertical: latest.verticals };
+    return { leadId, messages: msgs.slice(-MAX_BATCH), verticalId: latest.vertical_id ?? null, vertical: latest.verticals };
   }
   return null;
 }
@@ -1025,6 +1028,8 @@ async function runAgent(opts: {
   crm: CrmGate;
   shopify: ShopifyGate;
   bcvEnabled: boolean;
+  // Vertical de la conversación: acota search_kb a sus docs + los globales.
+  verticalId: string | null;
   // Campos para registrar lead_stage_events cuando el agente mueve etapas
   currentKommoStageId?: number | null;
   draftId?: string;
@@ -1087,7 +1092,7 @@ async function runAgent(opts: {
       try {
         let result: string;
         if (ev.name === "search_kb") {
-          result = await runSearchKb(ev.input ?? {});
+          result = await runSearchKb(ev.input ?? {}, opts.verticalId);
         } else if (CRM_TOOL_NAMES.has(ev.name)) {
           // Tools internas que operan Kommo (mover_etapa / actualizar_lead /
           // actualizar_contacto). Gate de seguridad por config (runtime).
@@ -1453,6 +1458,7 @@ Deno.serve(async (req: Request) => {
         crm,
         shopify,
         bcvEnabled: cfg?.bcv_rate_enabled === true,
+        verticalId: batch.verticalId,
         currentKommoStageId: lead.kommo_stage_id != null ? Number(lead.kommo_stage_id) : null,
         draftId: draft.id,
       });

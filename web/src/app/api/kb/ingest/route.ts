@@ -18,8 +18,12 @@ export async function POST(request: Request) {
   const file = form.get("file") as File | null;
   const title = (form.get("title") as string | null)?.trim();
   const inlineContent = form.get("content") as string | null;
+  // El agente SIEMPRE responde dentro de una vertical — no existe el concepto
+  // de "documento general" — así que todo documento debe estar atado a una.
+  const verticalId = (form.get("vertical_id") as string | null)?.trim();
 
   if (!title) return NextResponse.json({ error: "title requerido" }, { status: 400 });
+  if (!verticalId) return NextResponse.json({ error: "vertical_id requerido" }, { status: 400 });
 
   let text: string;
   let format: string;
@@ -68,6 +72,7 @@ export async function POST(request: Request) {
       embeddings_dim: 384,
       total_chunks: chunks.length,
       metadata: { format },
+      vertical_id: verticalId,
     })
     .select("id")
     .single();

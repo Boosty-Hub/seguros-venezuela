@@ -9,7 +9,7 @@ import {
   type AgentToolRow,
   type ToolGateFlags,
 } from "@/lib/agent-prompt";
-import { detectVoiceFiles, syncAgentTools } from "@/lib/sync-agent-tools";
+import { syncAgentTools } from "@/lib/sync-agent-tools";
 import {
   findByName,
   retrieveResource,
@@ -104,10 +104,6 @@ export async function POST() {
   const httpRows = toolRows.filter((r) => r.tool_type === "http");
   const tools = buildAgentTools(toolRows);
 
-  // Paso de voz condicional (mismo criterio que syncAgentTools): /voice/ vacío
-  // → el scaffold omite el paso. Fail-open a true dentro de detectVoiceFiles.
-  const hasVoice = await detectVoiceFiles(apiKey!, cfg.ANTHROPIC_MEMORY_MASTER_ID);
-
   // composeSystem = operator's editable prompt + the fixed CORE_SCAFFOLD
   // (machinery + security), with placeholders substituted. Same composition the
   // sync path uses, so the agent always gets the contract; the declared tool
@@ -120,8 +116,7 @@ export async function POST() {
       leadsStoreName: cfg.MEMORY_STORE_LEADS_NAME || "leads",
     },
     httpRows,
-    toolRows.map((r) => r.name),
-    { hasVoice }
+    toolRows.map((r) => r.name)
   );
 
   try {

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Modal, Button, ConfirmDialog, Switch, inputCls } from "@/components/ui";
+import { VerticalKbPanel } from "./vertical-kb-panel";
 
 type Vertical = {
   id: string;
@@ -15,7 +16,15 @@ type Vertical = {
   ignore: boolean;
 };
 
-export function VerticalRow({ vertical }: { vertical: Vertical }) {
+type KBDocument = {
+  id: string;
+  title: string;
+  sourceType: string;
+  totalChunks: number;
+  createdAt: string;
+};
+
+export function VerticalRow({ vertical, docs }: { vertical: Vertical; docs: KBDocument[] }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
 
@@ -123,6 +132,7 @@ export function VerticalRow({ vertical }: { vertical: Vertical }) {
         >
           <VerticalForm
             vertical={vertical}
+            docs={docs}
             onDone={() => {
               setOpen(false);
               router.refresh();
@@ -231,7 +241,15 @@ function VerticalAiAssist({
   );
 }
 
-function VerticalForm({ vertical, onDone }: { vertical: Vertical; onDone: () => void }) {
+function VerticalForm({
+  vertical,
+  docs,
+  onDone,
+}: {
+  vertical: Vertical;
+  docs: KBDocument[];
+  onDone: () => void;
+}) {
   const [name, setName] = useState(vertical.name);
   const [description, setDescription] = useState(vertical.description ?? "");
   const [system_prompt, setSystemPrompt] = useState(vertical.system_prompt);
@@ -319,6 +337,14 @@ function VerticalForm({ vertical, onDone }: { vertical: Vertical; onDone: () => 
           Cancelar
         </Button>
       </div>
+
+      <div className="space-y-2 border-t border-neutral-200 pt-4">
+        <h3 className="text-sm font-semibold text-neutral-900">
+          Base de conocimiento de &quot;{vertical.name}&quot;
+        </h3>
+        <VerticalKbPanel verticalId={vertical.id} docs={docs} />
+      </div>
+
       <ConfirmDialog
         open={confirmingDelete}
         title={`Borrar vertical "${vertical.slug}"`}

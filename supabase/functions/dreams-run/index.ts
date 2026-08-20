@@ -1,12 +1,27 @@
 // Edge Function: dreams-run
 //
 // Destila aprendizajes y los escribe como archivos en el master Memory Store
-// bajo /dreams/. El agente al servir un mensaje hace grep sobre
-// /mnt/memory/<master>/dreams/ y los toma como reglas implícitas.
+// bajo /dreams/. El agente NO los lee por filesystem en cada sesión — lee el
+// digest consolidado en runtime_config.DREAMS_DIGEST (ver rebuildDigest).
 //
 // Inputs:
-//   POST { period: "daily" }   → últimas 24h (conversations del día)
-//   POST { period: "weekly" }  → últimos 7d (learnings de leads, anonimizados)
+//   POST {}                        → extracción de aprendizajes. La ventana es
+//                                     el hueco real desde la última corrida
+//                                     (DREAMS_LAST_RUN), gobernada por la
+//                                     frecuencia elegida en /dreams (dropdown
+//                                     DREAMS_FREQUENCY) — que también es el
+//                                     intervalo REAL del cron que dispara esto
+//                                     (ver migración 0055_dreams_cron_dynamic.sql,
+//                                     set_dreams_schedule). Ya no hay due-check
+//                                     interno: si el cron te llamó, corre.
+//   POST { force: true }           → botón manual "Run ahora" del dashboard.
+//   POST { digest_only: true }     → SOLO reconsolida el digest (no extrae
+//                                     aprendizajes nuevos). Lo dispara: (a) el
+//                                     cron mensual de consolidación (cada 30
+//                                     días, dedupe/contradicciones sobre TODOS
+//                                     los dreams activos), y (b) una aprobación/
+//                                     borrado/import puntual desde /dreams para
+//                                     que ese cambio puntual se sienta ya.
 //
 // Implementación: usamos el Messages API directo (no CMA) porque es un job batch.
 
@@ -23,7 +38,11 @@ const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, {
   auth: { persistSession: false },
 });
 
-type Period = "daily" | "weekly";
+// Un solo "período" de extracción (ya no hay daily/weekly separados: la
+// cadencia real la da DREAMS_FREQUENCY + el cron). Se conserva el string
+// "daily" como segmento de path (/dreams/daily/...) para no romper los
+// aprendizajes ya escritos ni el parser del dashboard (parseDreamPath).
+type Period = "daily";
 
 // ---------------- Daily: conversaciones del día ----------------
 // transcript anonimizado + mapa Lead#N → lead_id real. El mapa viaja en el
@@ -91,69 +110,12 @@ async function gatherDaily(sinceIso?: string): Promise<Gathered> {
   return { transcript: parts.join("\n\n---\n\n"), leadMap };
 }
 
-// ---------------- Weekly: learnings de leads, anonimizados ----------------
-async function gatherWeekly(): Promise<Gathered> {
-  // Listamos los archivos /<lead_id>/learnings.md en el leads store
-  // y los traemos. Para simplicidad acá usamos lo mismo que daily pero 7 días.
-  const since = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
-  const { data: messages, error } = await supabase
-    .from("messages")
-    .select(
-      "lead_id, direction, content, source, classification, created_at, verticals(slug), draft:drafts!messages_answered_by_draft_id_fkey(body, edited_body, status)"
-    )
-    .gte("created_at", since)
-    .order("lead_id", { ascending: true });
-  if (error) throw new Error(`gatherWeekly: ${error.message}`);
-
-  const byLead = new Map<string, { vertical: string | null; turns: string[] }>();
-  const lastDraftLine = new Map<string, string>();
-  let leadCounter = 1;
-  const leadLabels = new Map<string, string>();
-
-  for (const m of messages ?? []) {
-    const label = leadLabels.get(m.lead_id) ?? (() => {
-      const l = `Lead#${leadCounter++}`;
-      leadLabels.set(m.lead_id, l);
-      return l;
-    })();
-    if (!byLead.has(label)) byLead.set(label, { vertical: null, turns: [] });
-    const entry = byLead.get(label)!;
-    // deno-lint-ignore no-explicit-any
-    const v = (m as any).verticals;
-    const verticalSlug = (Array.isArray(v) ? v[0]?.slug : v?.slug) ?? null;
-    if (verticalSlug && !entry.vertical) entry.vertical = verticalSlug;
-    entry.turns.push(`${m.direction}: ${m.content}`);
-    // deno-lint-ignore no-explicit-any
-    const draft = (m as any).draft as { body: string; edited_body: string | null; status: string } | null;
-    if (m.direction === "inbound" && draft) {
-      const line = `agente (${draft.status}): ${draft.edited_body ?? draft.body}`;
-      if (lastDraftLine.get(label) !== line) {
-        entry.turns.push(line);
-        lastDraftLine.set(label, line);
-      }
-    }
-  }
-
-  // Compactar por vertical para facilitar el análisis
-  const byVertical = new Map<string, string[]>();
-  for (const [label, entry] of byLead.entries()) {
-    const v = entry.vertical ?? "general";
-    if (!byVertical.has(v)) byVertical.set(v, []);
-    byVertical.get(v)!.push(`### ${label}\n${entry.turns.join("\n")}`);
-  }
-
-  const parts: string[] = [];
-  for (const [vertical, leads] of byVertical.entries()) {
-    parts.push(`# Vertical: ${vertical}\n${leads.join("\n\n")}`);
-  }
-  const leadMap = new Map<string, string>();
-  for (const [leadId, label] of leadLabels.entries()) leadMap.set(label, leadId);
-  return { transcript: parts.join("\n\n---\n\n"), leadMap };
-}
-
 // ---------------- Prompt para Dreams ----------------
-function dreamPrompt(period: Period, transcript: string, operator: string): string {
-  const periodLabel = period === "daily" ? "ÚLTIMAS 24 HORAS" : "ÚLTIMOS 7 DÍAS";
+// La ventana ya no es "daily" ni "weekly" fijo: es el hueco real desde la
+// última corrida (gobernado por DREAMS_FREQUENCY + el cron dinámico que lo
+// implementa — ver set_dreams_schedule en la migración 0055). periodLabel
+// describe esa ventana en días para que el prompt sea preciso.
+function dreamPrompt(periodLabel: string, transcript: string, operator: string): string {
   return `Eres el sistema de "Dreams" del agente conversacional de ${operator}. Tu trabajo es analizar conversaciones recientes y destilar APRENDIZAJES que mejoren al agente en el futuro.
 
 PERÍODO: ${periodLabel}
@@ -346,7 +308,7 @@ async function rebuildDigest(
   const prevDigest = (cfg.get("DREAMS_DIGEST") ?? "").trim();
   let digest = "";
   if (dreams.length > 0 || prevDigest) {
-    const dreamsModel = cfg.getOr("DREAMS_MODEL", "claude-sonnet-4-6");
+    const dreamsModel = cfg.getOr("DREAMS_MODEL", "claude-haiku-4-5");
     const operator = cfg.getOr("OPERATOR_NAME", "el operador");
     const body = dreams.map((d) => `### ${d.path}\n${d.content}`).join("\n\n");
     const response = await anthropic.messages.create({
@@ -433,17 +395,18 @@ async function runDreams(
   operator: string,
   policy: ActivationPolicy,
   cfg: ConfigReader,
-  sinceIso?: string
+  sinceIso: string,
+  periodLabel: string
 ) {
-  const { transcript, leadMap } = period === "daily" ? await gatherDaily(sinceIso) : await gatherWeekly();
+  const { transcript, leadMap } = await gatherDaily(sinceIso);
 
-  // Modelo de Dreams: editable desde /consumo (DB-first, fallback Sonnet).
-  const dreamsModel = cfg.getOr("DREAMS_MODEL", "claude-sonnet-4-6");
+  // Modelo de Dreams: editable desde /consumo (DB-first, fallback Haiku).
+  const dreamsModel = cfg.getOr("DREAMS_MODEL", "claude-haiku-4-5");
   const response = await anthropic.messages.create({
     model: dreamsModel,
     max_tokens: 4096,
     system: "Eres un analista riguroso que destila aprendizajes de conversaciones reales. No alucines.",
-    messages: [{ role: "user", content: dreamPrompt(period, transcript, operator) }],
+    messages: [{ role: "user", content: dreamPrompt(periodLabel, transcript, operator) }],
     output_config: {
       format: {
         type: "json_schema",
@@ -541,25 +504,27 @@ Deno.serve(async (req: Request) => {
   if (req.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405 });
   }
-  let body: { period?: string; force?: boolean; digest_only?: boolean } = {};
+  let body: { force?: boolean; digest_only?: boolean } = {};
   try {
     const text = await req.text();
     if (text) body = JSON.parse(text);
   } catch {
     // ignore
   }
-  const period = (body.period === "weekly" ? "weekly" : "daily") as Period;
-  const force = body.force === true; // el botón manual fuerza; el cron no.
+  const period: Period = "daily";
 
   try {
     // Resolve config at request time: DB-first, then env fallback.
     const cfg = await loadConfig(supabase);
 
-    // Modo digest_only: reconstruir SOLO el digest, sin correr el análisis.
-    // Lo disparan las mutaciones del dashboard (aprobar/borrar/importar dreams)
-    // para que el cambio llegue al agente en <60s, y la consolidación inicial.
-    // No pasa por el gating de frecuencia: el digest debe poder reconstruirse
-    // aunque el análisis nocturno no le toque correr todavía.
+    // Modo digest_only: reconstruir SOLO el digest consolidado (dedupe +
+    // resuelve contradicciones sobre TODOS los dreams activos), sin extraer
+    // aprendizajes nuevos. Es la ÚNICA vía que toca runtime_config.DREAMS_DIGEST
+    // (lo que de verdad lee el agente en cada respuesta) — la extracción de
+    // abajo solo escribe archivos crudos en /dreams/. Lo dispara: el cron
+    // mensual de consolidación (0055_dreams_cron_dynamic.sql) y las mutaciones
+    // puntuales del dashboard (aprobar/borrar/importar un dream), para que ESE
+    // cambio puntual se sienta ya sin esperar el próximo mes.
     if (body.digest_only === true) {
       const apiKey = cfg.require("ANTHROPIC_API_KEY");
       const anthropic = createAnthropicClient(apiKey, supabase);
@@ -571,34 +536,22 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    // Frecuencia configurable (solo gobierna el run 'daily'; 'weekly' es aparte).
-    // El cron dispara a diario y acá decidimos si toca correr según DREAMS_FREQUENCY
-    // y la última corrida efectiva (DREAMS_LAST_RUN). Tolerancia de 12h por el
-    // jitter del cron de las 3 AM.
+    // Ventana de extracción = hueco real desde la última corrida (clamp 1..30
+    // días), o la frecuencia elegida en /dreams si es la primera corrida. Ya
+    // NO hay due-check acá: si esta función corrió, es porque el cron real
+    // (dinámico según DREAMS_FREQUENCY, ver set_dreams_schedule en la
+    // migración 0055) decidió que tocaba, o porque alguien apretó "Run ahora".
     const DAY = 86_400_000;
-    let sinceIso: string | undefined;
-    if (period === "daily") {
-      const FREQ_DAYS: Record<string, number> = { daily: 1, "3d": 3, "7d": 7, "15d": 15 };
-      const freqDays = FREQ_DAYS[cfg.getOr("DREAMS_FREQUENCY", "daily")] ?? 1;
-      const lastRunRaw = cfg.get("DREAMS_LAST_RUN");
-      const lastRunMs = lastRunRaw ? Date.parse(lastRunRaw) : NaN;
-      if (!force && Number.isFinite(lastRunMs)) {
-        const elapsed = Date.now() - lastRunMs;
-        const dueMs = freqDays * DAY - 12 * 3_600_000;
-        if (elapsed < dueMs) {
-          return new Response(
-            JSON.stringify({ ok: true, skipped: true, reason: "not_due", freqDays, lastRun: lastRunRaw }),
-            { status: 200, headers: { "content-type": "application/json" } }
-          );
-        }
-      }
-      // Ventana = hueco real desde la última corrida (clamp 1..30 días), o freqDays
-      // días si es la primera corrida. Así 3d/7d/15d no pierden los días previos.
-      const spanMs = Number.isFinite(lastRunMs)
-        ? Math.min(Math.max(Date.now() - lastRunMs, DAY), 30 * DAY)
-        : Math.min(freqDays * DAY, 30 * DAY);
-      sinceIso = new Date(Date.now() - spanMs).toISOString();
-    }
+    const FREQ_DAYS: Record<string, number> = { daily: 1, "3d": 3, "7d": 7, "15d": 15 };
+    const freqDays = FREQ_DAYS[cfg.getOr("DREAMS_FREQUENCY", "daily")] ?? 1;
+    const lastRunRaw = cfg.get("DREAMS_LAST_RUN");
+    const lastRunMs = lastRunRaw ? Date.parse(lastRunRaw) : NaN;
+    const spanMs = Number.isFinite(lastRunMs)
+      ? Math.min(Math.max(Date.now() - lastRunMs, DAY), 30 * DAY)
+      : Math.min(freqDays * DAY, 30 * DAY);
+    const sinceIso = new Date(Date.now() - spanMs).toISOString();
+    const spanDays = Math.max(1, Math.round(spanMs / DAY));
+    const periodLabel = `ÚLTIMOS ${spanDays} DÍA${spanDays === 1 ? "" : "S"}`;
 
     const apiKey = cfg.require("ANTHROPIC_API_KEY");
     const anthropic = createAnthropicClient(apiKey, supabase);
@@ -608,28 +561,35 @@ Deno.serve(async (req: Request) => {
     const policy: ActivationPolicy =
       rawPolicy === "error" || rawPolicy === "none" ? rawPolicy : "all";
 
-    const result = await runDreams(period, anthropic, memstoreMaster, operator, policy, cfg, sinceIso);
+    const result = await runDreams(period, anthropic, memstoreMaster, operator, policy, cfg, sinceIso, periodLabel);
 
-    // Tras cada corrida (haya o no learnings nuevos), reconsolidar el digest:
-    // capta también aprobaciones/borrados hechos desde el dashboard entre
-    // corridas. Fail-open: un fallo del digest no invalida los learnings.
+    // Marca de la última corrida efectiva (define la ventana de la próxima).
+    const nowIso = new Date().toISOString();
+    const { error: stampErr } = await supabase
+      .from("runtime_config")
+      .upsert({ key: "DREAMS_LAST_RUN", value: nowIso, updated_at: nowIso, updated_by: "dreams-run" }, { onConflict: "key" });
+    if (stampErr) console.warn("stamp DREAMS_LAST_RUN:", stampErr.message);
+
+    // La extracción periódica solo acumula archivos crudos en /dreams/ (o
+    // /dreams-pending/ según la política); el digest que de verdad alimenta al
+    // agente (runtime_config.DREAMS_DIGEST) se reconsolida aparte, cada 30 días
+    // (cron de consolidación: dedupe + contradicciones sobre TODOS los dreams
+    // activos), o al aprobar/borrar un dream puntual desde el dashboard — así el
+    // agente no "aprende" a mitad de una ventana con datos parciales sin
+    // deduplicar. ÚNICA excepción: si esta corrida auto-activó algo (política
+    // "all"/"error" con severidad error), ese dream ya está activo — sin un
+    // refresh puntual del digest la alerta "el agente ya adoptó esta corrección"
+    // sería falsa. No es la consolidación completa (no dedupe contra el resto).
     let digestInfo: { dreams: number; archived: number; digest_chars: number } | null = null;
-    try {
-      digestInfo = await rebuildDigest(apiKey, anthropic, memstoreMaster, cfg);
-    } catch (err) {
-      console.warn("rebuildDigest:", err instanceof Error ? err.message : String(err));
+    if (result.active > 0) {
+      try {
+        digestInfo = await rebuildDigest(apiKey, anthropic, memstoreMaster, cfg);
+      } catch (err) {
+        console.warn("rebuildDigest (auto-activate):", err instanceof Error ? err.message : String(err));
+      }
     }
 
-    // Marca de la última corrida daily efectiva (para el due-check de la próxima).
-    if (period === "daily") {
-      const nowIso = new Date().toISOString();
-      const { error: stampErr } = await supabase
-        .from("runtime_config")
-        .upsert({ key: "DREAMS_LAST_RUN", value: nowIso, updated_at: nowIso, updated_by: "dreams-run" }, { onConflict: "key" });
-      if (stampErr) console.warn("stamp DREAMS_LAST_RUN:", stampErr.message);
-    }
-
-    return new Response(JSON.stringify({ ok: true, period, ...result, digest: digestInfo }), {
+    return new Response(JSON.stringify({ ok: true, period, window_days: spanDays, ...result, digest: digestInfo }), {
       status: 200,
       headers: { "content-type": "application/json" },
     });

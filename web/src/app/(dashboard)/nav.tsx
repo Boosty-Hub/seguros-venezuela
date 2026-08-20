@@ -4,8 +4,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, useEffect } from "react";
 import {
-  Menu, X, Inbox, Users, Layers, Target, Sparkles, Stars,
-  Bot, Wrench, Repeat, Bell, Settings, LogOut, BarChart3, MessageSquare, ChevronRight,
+  Menu, X, Inbox, Users, Target, Sparkles, Stars,
+  Bot, Bell, LogOut, BarChart3, ChevronRight,
   TrendUp,
 } from "@/components/ui";
 import { BcvBanner } from "./bcv-banner";
@@ -44,9 +44,8 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     label: "Contenido y calidad",
     items: [
-      { href: "/contenido", label: "Contenido", icon: Layers },
-      { href: "/promos", label: "Promos y situaciones", icon: Sparkles },
       { href: "/verticales", label: "Verticales", icon: Target },
+      { href: "/promos", label: "Promos y situaciones", icon: Sparkles },
       { href: "/outcomes", label: "Outcomes", icon: Sparkles },
       { href: "/consumo", label: "Consumo", icon: BarChart3 },
       { href: "/dreams", label: "Dreams", icon: Stars },
@@ -56,12 +55,11 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "Configuración",
     adminOnly: true,
     items: [
-      { href: "/agent", label: "Agente", icon: Bot },
-      { href: "/config/kommo", label: "Kommo", icon: MessageSquare },
-      { href: "/tools", label: "Herramientas", icon: Wrench },
-      { href: "/seguimiento", label: "Seguimiento", icon: Repeat },
+      // Identidad, comportamiento, acciones, Kommo, herramientas, seguimiento
+      // y ajustes viven todos acá adentro como pestañas (ver /agent/agent-tabs.tsx)
+      // — un solo módulo de Configuración, sin repartir entre 6 rutas.
+      { href: "/agent", label: "Configuración", icon: Bot },
       { href: "/usuarios", label: "Usuarios", icon: Users },
-      { href: "/settings", label: "Ajustes", icon: Settings },
     ],
   },
 ];

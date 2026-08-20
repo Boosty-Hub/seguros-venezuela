@@ -187,7 +187,7 @@ export function UpdatesBanner({ autoUpdate }: { autoUpdate: boolean }) {
               Reintentar
             </button>
             <a
-              href="/settings"
+              href="/agent?tab=ajustes"
               className="shrink-0 text-xs font-medium text-amber-800 underline"
             >
               Configuración

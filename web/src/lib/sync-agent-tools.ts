@@ -19,26 +19,7 @@ import {
   type AgentToolRow,
   type ToolGateFlags,
 } from "@/lib/agent-prompt";
-import { listMemories, retrieveAgent, updateAgent } from "@/lib/anthropic-managed";
-
-/**
- * Detecta si el master Memory Store tiene archivos de voz (/voice/). Con la
- * carpeta vacía, el paso de voz del scaffold era un turno muerto en CADA
- * sesión del agente. Fail-open: ante cualquier error devuelve true (mantener
- * el paso = comportamiento previo, nunca se pierde una voz real).
- */
-export async function detectVoiceFiles(
-  apiKey: string,
-  masterStoreId: string | undefined
-): Promise<boolean> {
-  if (!masterStoreId) return true;
-  try {
-    const items = await listMemories(apiKey, masterStoreId, "/voice/");
-    return items.length > 0;
-  } catch {
-    return true;
-  }
-}
+import { retrieveAgent, updateAgent } from "@/lib/anthropic-managed";
 
 export interface SyncResult {
   version: number | null;
@@ -119,10 +100,6 @@ export async function syncAgentTools(actor: string): Promise<SyncResult> {
     const tools = buildAgentTools(rows);
     const httpRows = rows.filter((r) => r.tool_type === "http");
 
-    // Paso de voz condicional: si /voice/ está vacío en el master store, el
-    // scaffold omite ese paso (era un turno muerto por sesión).
-    const hasVoice = await detectVoiceFiles(apiKey, cfg.ANTHROPIC_MEMORY_MASTER_ID);
-
     // composeSystem prepends the operator's editable prompt and appends the
     // fixed CORE_SCAFFOLD (machinery + security), then substitutes placeholders.
     // The declared tool names drive the scaffold's CRM actions block so the
@@ -135,8 +112,7 @@ export async function syncAgentTools(actor: string): Promise<SyncResult> {
         leadsStoreName: cfg.MEMORY_STORE_LEADS_NAME || "leads",
       },
       httpRows,
-      rows.map((r) => r.name),
-      { hasVoice }
+      rows.map((r) => r.name)
     );
 
     // 4. Optimistic concurrency: read current version then PATCH.

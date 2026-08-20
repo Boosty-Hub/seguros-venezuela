@@ -867,7 +867,7 @@ export function SetupDrawer({ state }: { state: SetupState }) {
                   <p className="mt-1 text-xs text-neutral-500">
                     El campo de Kommo donde el agente escribe y el salesbot que envía la
                     respuesta se configuran después, en{" "}
-                    <a className="underline" href="/config/kommo">
+                    <a className="underline" href="/agent?tab=kommo">
                       Config → Kommo
                     </a>
                     . Acá alcanza con conectar la cuenta.
@@ -903,7 +903,7 @@ export function SetupDrawer({ state }: { state: SetupState }) {
                   <p className="mb-1 font-medium">Próximo paso recomendado</p>
                   <p>
                     Anda a{" "}
-                    <a className="font-medium underline" href="/settings">
+                    <a className="font-medium underline" href="/agent?tab=ajustes">
                       Configuración
                     </a>{" "}
                     y activa el modo de validación (

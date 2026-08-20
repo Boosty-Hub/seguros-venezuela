@@ -127,7 +127,7 @@ export function ShopifyActionsPanel({
         {!connected ? (
           <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
             ⚠️ Shopify no está conectado. Conecta la tienda en{" "}
-            <a href="/settings" className="font-medium underline">
+            <a href="/agent?tab=ajustes" className="font-medium underline">
               Configuración
             </a>{" "}
             (pegas el dominio y el token) y después activas las capacidades acá.

@@ -17,7 +17,7 @@ export const MODEL_KEYS: Record<string, string> = {
   CLASSIFY_MODEL: "claude-haiku-4-5",
   COMMENT_REPLY_MODEL: "claude-haiku-4-5",
   GRADER_MODEL: "claude-haiku-4-5",
-  DREAMS_MODEL: "claude-sonnet-4-6",
+  DREAMS_MODEL: "claude-haiku-4-5",
 };
 
 // Descripción humana de qué gobierna cada key (para el panel de /consumo).

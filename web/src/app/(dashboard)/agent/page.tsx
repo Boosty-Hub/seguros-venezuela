@@ -1,19 +1,36 @@
 import { configValues } from "@/lib/runtime-config";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { getShopifyStatus } from "@/lib/shopify";
+import { retrieveAgent } from "@/lib/anthropic-managed";
 import { Badge, PageShell, SectionCard } from "@/components/ui";
 import { AgentForm } from "./agent-form";
 import { AgentTabs } from "./agent-tabs";
 import { AgentPublishPanel, type PublishState, type ReviewMode } from "./agent-publish-panel";
 import type { Rule, VerticalLite } from "./filters-panel";
 import type { CommentsConfig } from "./comments-panel";
+import { KommoBody } from "../config/kommo/kommo-body";
+import { ToolsBody } from "../tools/tools-body";
+import { SeguimientoBody } from "../seguimiento/seguimiento-body";
+import { SettingsBody } from "../settings/settings-body";
 
 export const dynamic = "force-dynamic";
 
+// "Configuración" unificada: Identidad/Comportamiento/Acciones (del agente) +
+// Kommo + Herramientas + Seguimiento + Ajustes, todo en una sola pestaña de
+// nivel superior (ver agent-tabs.tsx). Usuarios queda AFUERA a propósito
+// (nav.tsx la deja como su propio ítem).
 export default async function AgentPage({
   searchParams,
 }: {
-  searchParams: { saved?: string; sync?: string; error?: string; tab?: string };
+  searchParams: {
+    saved?: string;
+    sync?: string;
+    error?: string;
+    tab?: string;
+    kommo_saved?: string;
+    alerts_saved?: string;
+    asub?: string;
+  };
 }) {
   const cfg = await configValues([
     "SYSTEM_PROMPT",
@@ -24,7 +41,26 @@ export default async function AgentPage({
     "ANTHROPIC_AGENT_VERSION",
     "BCV_RATE_URL",
     "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
   ]);
+
+  // System prompt COMPLETO tal cual vive HOY en Anthropic (operatorPrompt +
+  // CORE_SCAFFOLD + tools ya sustituidos) — se lee EN VIVO del agente real, no
+  // se recompone localmente, para que sea la fuente de verdad exacta de "qué
+  // hay dentro de Anthropic" y nunca pueda desincronizarse de lo editable de
+  // arriba. Fail-soft: si el fetch falla, se muestra el aviso en vez de tirar
+  // la página entera.
+  let liveSystemPrompt: string | null = null;
+  let liveSystemPromptError: string | null = null;
+  if (cfg.ANTHROPIC_AGENT_ID && cfg.ANTHROPIC_API_KEY) {
+    try {
+      const liveAgent = await retrieveAgent(cfg.ANTHROPIC_API_KEY, cfg.ANTHROPIC_AGENT_ID);
+      const sys = (liveAgent as unknown as { system?: unknown }).system;
+      liveSystemPrompt = typeof sys === "string" ? sys : null;
+    } catch (e) {
+      liveSystemPromptError = e instanceof Error ? e.message : String(e);
+    }
+  }
 
   const supabase = createSupabaseServerClient();
   const [rulesRes, pubRes, vertRes, seenRes, shopifyStatus, fuRes] = await Promise.all([
@@ -125,17 +161,15 @@ export default async function AgentPage({
   const sync = searchParams.sync;
   const errorMsg = searchParams.error;
   const provisioned = Boolean(cfg.ANTHROPIC_AGENT_ID);
-  const initialTab =
-    searchParams.tab === "filtros"
-      ? "filtros"
-      : searchParams.tab === "acciones"
-      ? "acciones"
-      : "identidad";
+  const VALID_TABS = ["identidad", "filtros", "acciones", "kommo", "herramientas", "seguimiento", "ajustes"] as const;
+  const initialTab = (VALID_TABS as readonly string[]).includes(searchParams.tab ?? "")
+    ? (searchParams.tab as (typeof VALID_TABS)[number])
+    : "identidad";
 
   return (
     <PageShell
-      title="Agente"
-      description="La identidad del agente (voz, nombre, branding) y los filtros que deciden cuándo NO responde."
+      title="Configuración"
+      description="Todo lo que gobierna al agente: identidad, comportamiento, acciones, Kommo, herramientas, seguimiento y ajustes."
     >
       {saved && sync === "ok" && (
         <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
@@ -180,6 +214,15 @@ export default async function AgentPage({
         bcvHasCustomSource={bcvHasCustomSource}
         businessHours={businessHours}
         comments={comments}
+        kommoSlot={<KommoBody kommoSaved={searchParams.kommo_saved === "1"} />}
+        toolsSlot={<ToolsBody />}
+        seguimientoSlot={<SeguimientoBody />}
+        ajustesSlot={
+          <SettingsBody
+            alertsSaved={searchParams.alerts_saved === "1"}
+            asub={searchParams.asub}
+          />
+        }
       >
         {/* Panel: Identidad */}
         <div className="space-y-6">
@@ -218,6 +261,8 @@ export default async function AgentPage({
               agentLabel: cfg.NEXT_PUBLIC_AGENT_LABEL ?? "",
               systemPrompt: cfg.SYSTEM_PROMPT ?? "",
             }}
+            liveSystemPrompt={liveSystemPrompt}
+            liveSystemPromptError={liveSystemPromptError}
           />
         </div>
       </AgentTabs>

@@ -15,19 +15,49 @@ type Vertical = {
   ignore: boolean;
 };
 
+type KBDocument = {
+  id: string;
+  title: string;
+  sourceType: string;
+  totalChunks: number;
+  createdAt: string;
+};
+
 export default async function VerticalesPage() {
   const supabase = createSupabaseServerClient();
-  const { data: verticals } = await supabase
-    .from("verticals")
-    .select("id, slug, name, description, system_prompt, auto_reply, requires_review, ignore")
-    .order("slug");
+  const [{ data: verticals }, { data: rawDocs }] = await Promise.all([
+    supabase
+      .from("verticals")
+      .select("id, slug, name, description, system_prompt, auto_reply, requires_review, ignore")
+      .order("slug"),
+    supabase
+      .from("kb_documents")
+      .select("id, title, source_type, total_chunks, created_at, vertical_id")
+      .order("created_at", { ascending: false }),
+  ]);
 
   const verticalList = (verticals ?? []) as Vertical[];
+
+  // Documentos de KB agrupados por vertical — cada vertical solo ve (y sube)
+  // los suyos; no existe más el concepto de "documento general".
+  const docsByVertical = new Map<string, KBDocument[]>();
+  for (const d of rawDocs ?? []) {
+    if (!d.vertical_id) continue;
+    const list = docsByVertical.get(d.vertical_id as string) ?? [];
+    list.push({
+      id: d.id as string,
+      title: d.title as string,
+      sourceType: d.source_type as string,
+      totalChunks: (d.total_chunks as number) ?? 0,
+      createdAt: d.created_at as string,
+    });
+    docsByVertical.set(d.vertical_id as string, list);
+  }
 
   return (
     <PageShell
       title="Verticales"
-      description="Categorías de mensajes. El clasificador usa la descripción para asignar la vertical; el agente usa el prompt específico como instrucción por vertical."
+      description="Categorías de mensajes. El clasificador usa la descripción para asignar la vertical; el agente usa el prompt específico como instrucción por vertical y solo consulta los documentos de conocimiento (RAG) de la vertical activa — súbelos entrando a cada una."
       actions={<NewVerticalForm />}
     >
       {verticalList.length === 0 ? (
@@ -51,7 +81,7 @@ export default async function VerticalesPage() {
               </thead>
               <tbody className="divide-y divide-neutral-100">
                 {verticalList.map((v) => (
-                  <VerticalRow key={v.id} vertical={v} />
+                  <VerticalRow key={v.id} vertical={v} docs={docsByVertical.get(v.id) ?? []} />
                 ))}
               </tbody>
             </table>
