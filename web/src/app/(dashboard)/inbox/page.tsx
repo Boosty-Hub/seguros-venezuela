@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { Badge, StatRow, StatCard, EmptyState, Inbox as InboxIcon, MessageSquare, Alert } from "@/components/ui";
+import { Badge, StatCard, EmptyState, Inbox as InboxIcon, MessageSquare, Alert } from "@/components/ui";
 import { timeAgo } from "@/lib/time-ago";
 import RealtimeRefresher from "./realtime-refresher";
 import DraftActions from "./draft-actions";
@@ -24,6 +24,7 @@ type SearchParams = {
   urgent?: string;
   rango?: string;
   sort?: string;
+  vista?: string;
 };
 
 function withinRange(iso: string | null, rango: string): boolean {
@@ -65,11 +66,24 @@ export default async function InboxPage({
   const supabase = createSupabaseServerClient();
   const selectedLead = searchParams.lead ?? null;
 
+  // Config de publicación: se necesita YA (no solo cuando hay lead seleccionado)
+  // para poder clasificar CADA lead de la lista en la pestaña Agente/Resto
+  // (etapa pausada = el agente no responde ahí) y saber a quién se le mostró
+  // el tag "Transferido a humano" viene de una columna en leads, no de acá.
+  const { data: pubCfgList } = await supabase
+    .from("kommo_publish_config")
+    .select("agent_enabled, publishing_enabled, salesbot_id, ignored_stage_ids")
+    .eq("is_active", true)
+    .maybeSingle();
+  const ignoredStageIdsList = ((pubCfgList?.ignored_stage_ids ?? []) as unknown[])
+    .map(Number)
+    .filter((n) => Number.isFinite(n));
+
   // 1) Leads activos (con al menos un mensaje, ordenados por último mensaje)
   const { data: leads } = await supabase
     .from("leads")
     .select(
-      "id, display_name, channel, kommo_lead_id, kommo_stage_id, last_message_at, messages!inner(id, content, direction, requires_human_review, created_at, classification, verticals(slug))"
+      "id, display_name, channel, kommo_lead_id, kommo_stage_id, last_message_at, transferred_to_human_at, transferred_to_human_stage, messages!inner(id, content, direction, requires_human_review, created_at, classification, verticals(slug))"
     )
     .order("last_message_at", { ascending: false, nullsFirst: false })
     .limit(500);
@@ -82,12 +96,17 @@ export default async function InboxPage({
     kommo_lead_id: number | null;
     kommo_stage_id: number | null;
     last_message_at: string | null;
+    transferredToHumanAt: string | null;
+    transferredToHumanStage: string | null;
     lastMsg: { content: string; direction: string; vertical: string | null; requires_review: boolean; created_at: string } | null;
     hasReviewPending: boolean;
     verticals: string[];
     maxUrgency: number;
     maxToxicity: number;
     msgCount: number;
+    // false = la etapa actual del lead está pausada (ignored_stage_ids): el
+    // agente no responde ahí, la lleva un humano (pestaña Agente/Resto).
+    atendidoPorAgente: boolean;
   };
 
   const allLeadRows: LeadRow[] = (leads ?? []).map((l) => {
@@ -111,13 +130,17 @@ export default async function InboxPage({
       maxUrgency = Math.max(maxUrgency, Number(cls.urgency ?? 0) || 0);
       maxToxicity = Math.max(maxToxicity, Number(cls.toxicity ?? 0) || 0);
     }
+    const stageId = (l as unknown as { kommo_stage_id?: number | null }).kommo_stage_id ?? null;
     return {
       id: l.id,
       display_name: l.display_name,
       channel: l.channel,
       kommo_lead_id: l.kommo_lead_id,
-      kommo_stage_id: (l as unknown as { kommo_stage_id?: number | null }).kommo_stage_id ?? null,
+      kommo_stage_id: stageId,
       last_message_at: l.last_message_at,
+      transferredToHumanAt: (l as unknown as { transferred_to_human_at?: string | null }).transferred_to_human_at ?? null,
+      transferredToHumanStage: (l as unknown as { transferred_to_human_stage?: string | null }).transferred_to_human_stage ?? null,
+      atendidoPorAgente: stageId == null || !ignoredStageIdsList.includes(stageId),
       lastMsg: last
         ? {
             content: last.content,
@@ -151,9 +174,14 @@ export default async function InboxPage({
   const fUrgent = searchParams.urgent === "1";
   const fRango = searchParams.rango ?? "";
   const fSort = searchParams.sort ?? "recent";
+  // Pestaña Agente/Resto — default "agente" (lo que el usuario quiere ver
+  // primero: qué está atendiendo el agente ahora mismo).
+  const fVista = searchParams.vista === "resto" ? "resto" : "agente";
 
   const leadRows = allLeadRows
     .filter((l) => {
+      if (fVista === "agente" && !l.atendidoPorAgente) return false;
+      if (fVista === "resto" && l.atendidoPorAgente) return false;
       if (fQ) {
         const hay = `${l.display_name ?? ""} ${l.kommo_lead_id ?? ""} ${l.lastMsg?.content ?? ""}`.toLowerCase();
         if (!hay.includes(fQ)) return false;
@@ -165,6 +193,7 @@ export default async function InboxPage({
       if (fEstado === "waiting" && l.lastMsg?.direction !== "inbound") return false;
       if (fEstado === "answered" && l.lastMsg?.direction !== "outbound") return false;
       if (fEstado === "toxic" && l.maxToxicity <= 0.3) return false;
+      if (fEstado === "transferido" && !l.transferredToHumanAt) return false;
       if (fRango && !withinRange(l.last_message_at, fRango)) return false;
       return true;
     })
@@ -196,7 +225,21 @@ export default async function InboxPage({
   if (fUrgent) filterParams.set("urgent", "1");
   if (fRango) filterParams.set("rango", fRango);
   if (fSort !== "recent") filterParams.set("sort", fSort);
+  if (fVista !== "agente") filterParams.set("vista", fVista);
   const filterQS = filterParams.toString();
+
+  // Conteos para las pestañas (sobre TODOS los leads, sin los demás filtros —
+  // así la pestaña siempre muestra cuántos hay en total en cada lado).
+  const agenteCount = allLeadRows.filter((l) => l.atendidoPorAgente).length;
+  const restoCount = allLeadRows.length - agenteCount;
+  // Querystring para cambiar de pestaña preservando el resto de los filtros.
+  function vistaHref(vista: "agente" | "resto"): string {
+    const p = new URLSearchParams(filterParams);
+    p.delete("vista");
+    if (vista !== "agente") p.set("vista", vista);
+    const qs = p.toString();
+    return qs ? `/inbox?${qs}` : "/inbox";
+  }
 
   // 2) Conversación seleccionada
   type MessageRow = {
@@ -322,20 +365,14 @@ export default async function InboxPage({
       }
     }
 
-    // Estado del agente para esta conversación: mismos gates que el backend.
-    const { data: pubCfg } = await supabase
-      .from("kommo_publish_config")
-      .select("agent_enabled, publishing_enabled, salesbot_id, ignored_stage_ids")
-      .eq("is_active", true)
-      .maybeSingle();
+    // Estado del agente para esta conversación: mismos gates que el backend
+    // (reusa pubCfgList, ya cargado arriba para clasificar toda la lista).
     agentStatus = computeAgentStatus({
       // generate-response solo bloquea con agent_enabled === false explícito.
-      agentEnabled: pubCfg?.agent_enabled !== false,
-      publishingEnabled: pubCfg?.publishing_enabled === true,
-      salesbotId: (pubCfg?.salesbot_id as number | null) ?? null,
-      ignoredStageIds: (((pubCfg?.ignored_stage_ids ?? []) as unknown[])
-        .map(Number)
-        .filter((n) => Number.isFinite(n))),
+      agentEnabled: pubCfgList?.agent_enabled !== false,
+      publishingEnabled: pubCfgList?.publishing_enabled === true,
+      salesbotId: (pubCfgList?.salesbot_id as number | null) ?? null,
+      ignoredStageIds: ignoredStageIdsList,
       stageId: currentStageId,
     });
   }
@@ -353,31 +390,76 @@ export default async function InboxPage({
 
       {/* Topbar sticky manual (Inbox es split-full-height — NO usa PageShell) */}
       <div className="sticky top-0 z-20 border-b border-neutral-200/80 bg-white/80 backdrop-blur-md">
-        <div className="flex items-center justify-between gap-4 px-4 py-3.5 sm:px-6">
+        <div className="flex items-center justify-between gap-4 px-4 py-2.5 sm:px-6">
           <h1 className="text-[15px] font-semibold tracking-tight text-neutral-900">Inbox</h1>
-        </div>
-        {/* Stats row debajo del título */}
-        <div className="px-4 pb-3 sm:px-6">
-          <StatRow>
+          {/* Stat cards compactas, en la misma fila que el título */}
+          <div className="flex flex-wrap items-center gap-1.5">
             <StatCard
+              compact
               label="Conversaciones"
               value={totalActive}
-              icon={<InboxIcon size={18} />}
+              icon={<InboxIcon size={14} />}
               tone="brand"
             />
             <StatCard
+              compact
               label="Sin responder"
               value={leadRows.filter((l) => l.lastMsg?.direction === "inbound").length}
-              icon={<MessageSquare size={18} />}
+              icon={<MessageSquare size={14} />}
               tone={leadRows.filter((l) => l.lastMsg?.direction === "inbound").length > 0 ? "amber" : "default"}
             />
             <StatCard
+              compact
               label="En revisión"
               value={pendingReview}
-              icon={<Alert size={18} />}
+              icon={<Alert size={14} />}
               tone={pendingReview > 0 ? "red" : "default"}
             />
-          </StatRow>
+            <StatCard
+              compact
+              label="Transferidos"
+              value={allLeadRows.filter((l) => l.transferredToHumanAt).length}
+              icon={<span aria-hidden>🤝</span>}
+              tone={allLeadRows.filter((l) => l.transferredToHumanAt).length > 0 ? "emerald" : "default"}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Pestañas Agente / Resto — qué está atendiendo el agente ahora mismo
+          vs. todo lo demás (etapas pausadas, transferido a humano, etc.) */}
+      <div className="border-b border-neutral-200/80 bg-white px-4 pt-2 sm:px-6">
+        <div className="flex gap-1">
+          {(
+            [
+              { key: "agente" as const, label: "Agente", count: agenteCount },
+              { key: "resto" as const, label: "Resto", count: restoCount },
+            ]
+          ).map((t) => {
+            const isActive = fVista === t.key;
+            return (
+              <Link
+                key={t.key}
+                href={vistaHref(t.key)}
+                className={
+                  "inline-flex items-center gap-1.5 rounded-t-lg border-b-2 px-3 py-1.5 text-xs font-medium transition-colors " +
+                  (isActive
+                    ? "border-brand text-brand-strong"
+                    : "border-transparent text-neutral-500 hover:text-neutral-800")
+                }
+              >
+                {t.label}
+                <span
+                  className={
+                    "inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full px-1 text-[10px] font-semibold " +
+                    (isActive ? "bg-brand-soft text-brand-strong" : "bg-neutral-100 text-neutral-500")
+                  }
+                >
+                  {t.count}
+                </span>
+              </Link>
+            );
+          })}
         </div>
       </div>
 
@@ -462,6 +544,11 @@ export default async function InboxPage({
                               )}
                               {l.lastMsg?.vertical && <Badge color="blue" size="sm">{l.lastMsg.vertical}</Badge>}
                               {l.hasReviewPending && <Badge color="amber" size="sm">revisión</Badge>}
+                              {l.transferredToHumanAt && (
+                                <Badge color="green" size="sm">
+                                  🤝 transferido{l.transferredToHumanStage ? ` a ${l.transferredToHumanStage}` : ""}
+                                </Badge>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -694,6 +781,19 @@ export default async function InboxPage({
                                     status={draft.status}
                                   />
                                 </div>
+                                {Array.isArray(draft.agent_metadata?.images_sent) &&
+                                  (draft.agent_metadata.images_sent as unknown[]).length > 0 && (
+                                    <div className="mt-3 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2">
+                                      <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-sky-500">
+                                        Imagen(es) enviada(s) al lead
+                                      </p>
+                                      <p className="text-xs text-sky-900">
+                                        {(draft.agent_metadata.images_sent as unknown[])
+                                          .map((x) => String(x))
+                                          .join(", ")}
+                                      </p>
+                                    </div>
+                                  )}
                                 {typeof draft.agent_metadata?.publish_error === "string" && (
                                   <details className="mt-2">
                                     <summary className="cursor-pointer text-xs text-red-600">

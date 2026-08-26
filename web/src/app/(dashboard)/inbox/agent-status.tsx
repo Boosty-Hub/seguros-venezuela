@@ -43,7 +43,7 @@ export function computeAgentStatus(input: {
       label: "Etapa ignorada",
       detail:
         "Este lead está en una etapa que el agente tiene configurada para ignorar — no le genera respuesta. Muévelo de etapa o saca esa etapa de la lista de ignoradas.",
-      fixHref: "/agent?tab=filtros",
+      fixHref: "/agent?tab=agente",
       fixLabel: "Ver etapas ignoradas",
     };
   }

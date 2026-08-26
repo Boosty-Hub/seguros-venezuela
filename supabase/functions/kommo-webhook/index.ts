@@ -46,11 +46,8 @@ function parseFormBracketed(body: string): Record<string, unknown> {
 }
 
 // ¿El payload tiene algo que process-inbound sepa procesar?
-// processPayload SOLO mira `leads.add` y `message.add`. Los eventos
-// `leads.update` / `leads.status` son ~64% del tráfico real y no producen
-// NINGÚN efecto — pero cada uno disparaba una invocación completa de
-// process-inbound. Se siguen encolando (trazabilidad); el sweep de pg_cron
-// los marca 'done' dentro del minuto.
+// processPayload mira `leads.add`, `leads.status`, `leads.update` (cambio de
+// etapa sin mensaje — se refleja en la conversación) y `message.add`.
 //
 // FAIL-OPEN a propósito: ante cualquier forma que no sepamos inspeccionar
 // (`_raw` de un body que no parseó, un grupo nuevo de Kommo) devolvemos true y
@@ -68,7 +65,7 @@ function isActionable(payload: Record<string, unknown>): boolean {
   const message = group("message");
   // Ningún grupo conocido → puede ser una forma nueva de Kommo: disparar.
   if (!leads && !message) return true;
-  return Boolean(leads?.add) || Boolean(message?.add);
+  return Boolean(leads?.add) || Boolean(leads?.status) || Boolean(leads?.update) || Boolean(message?.add);
 }
 
 // Coalescing del trigger a process-inbound.

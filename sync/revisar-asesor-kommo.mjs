@@ -2,7 +2,8 @@
 // Etiqueta en Kommo los leads de Zoho que se migraron ANTES de activar el
 // filtro de Asesor. Regla vigente (ver lib/supa.mjs, FILTRO_SIN_ASESOR): solo
 // deben entrar al CRM los tickets cuyo campo "Asesor" sea "No tengo", "Sin
-// Asesor" o "Sin Asesor (KG)" (variantes de mayusculas/espacios toleradas).
+// Asesor", "Sin Asesor (KG)" o "Seguros Venezuela" (variantes de
+// mayusculas/espacios/sufijos toleradas).
 //
 //   node --env-file=.env revisar-asesor-kommo.mjs           aplica la etiqueta
 //   node --env-file=.env revisar-asesor-kommo.mjs --dry-run solo informa

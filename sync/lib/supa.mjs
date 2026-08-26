@@ -133,11 +133,12 @@ export async function getKommoState() {
 
 /**
  * Filtro Postgrest (OR, ilike) que solo deja pasar tickets "sin asesor real":
- * el campo Asesor de Zoho vale "No tengo", "Sin Asesor" o "Sin Asesor (KG)"
- * (con variantes de mayusculas/espacios). El resto de tickets SI tienen un
- * asesor/corredor asignado y no deben entrar al CRM.
+ * el campo Asesor de Zoho vale "No tengo", "Sin Asesor", "Sin Asesor (KG)" o
+ * "Seguros Venezuela" (con variantes de mayusculas/espacios/sufijos como
+ * ", C.A."). El resto de tickets SI tienen un asesor/corredor asignado y no
+ * deben entrar al CRM.
  */
-const FILTRO_SIN_ASESOR = 'or=(asesor.ilike.*no*tengo*,asesor.ilike.*sin*asesor*)';
+const FILTRO_SIN_ASESOR = 'or=(asesor.ilike.*no*tengo*,asesor.ilike.*sin*asesor*,asesor.ilike.*seguros*venezuela*)';
 
 /**
  * Tickets que todavia no tienen lead en Kommo y son POSTERIORES al corte.
@@ -166,6 +167,57 @@ export async function getTicketsPendingKommo({ since, limit = 200 } = {}) {
 }
 
 /**
+ * Filtro inverso: tickets CON asesor/corredor real asignado — es decir,
+ * cualquier valor de Asesor que NO sea ninguno de los 4 de FILTRO_SIN_ASESOR.
+ * Excluye ademas asesor null/vacio (dato incompleto, no se asume corredor).
+ * Estos son los que van al embudo B2B (corredores que cotizan via Sofi u
+ * otras plataformas) en vez del B2C.
+ */
+const FILTRO_CON_ASESOR =
+  'asesor=not.is.null' +
+  '&asesor=neq.' +
+  '&asesor=not.ilike.*no*tengo*' +
+  '&asesor=not.ilike.*sin*asesor*' +
+  '&asesor=not.ilike.*seguros*venezuela*';
+
+/** Estado de la integracion Kommo B2B (corte, contadores) — espejo de getKommoState(). */
+export async function getKommoB2BState() {
+  requireEnv();
+  const r = await fetch(
+    `${SUPABASE_URL}/rest/v1/sync_state?id=eq.1&select=kommo_b2b_since,kommo_b2b_total,kommo_b2b_last_run`,
+    { headers: headers() },
+  );
+  if (!r.ok) throw new Error(`Supabase kommo_b2b_state -> HTTP ${r.status}: ${await r.text()}`);
+  const j = await r.json();
+  return j[0] || {};
+}
+
+/**
+ * Tickets CON asesor real, todavia sin lead en Kommo, posteriores al corte
+ * B2B (kommo_b2b_since) — van al embudo VENTAS B2B / etapa "DATA ZOHO DESK".
+ * Espejo de getTicketsPendingKommo() pero con el filtro invertido.
+ */
+export async function getTicketsPendingKommoB2B({ since, limit = 200 } = {}) {
+  requireEnv();
+  if (!since) throw new Error('getTicketsPendingKommoB2B: falta el corte (kommo_b2b_since)');
+  const cols = [
+    'id', 'ticket_number', 'subject', 'status', 'status_type', 'channel',
+    'contact_name', 'email', 'phone', 'titular', 'asesor', 'plan_hcm',
+    'monto_prima', 'moneda', 'created_time', 'web_url',
+  ].join(',');
+  const url =
+    `${SUPABASE_URL}/rest/v1/tickets?select=${cols}` +
+    `&kommo_lead_id=is.null` +
+    `&created_time=gte.${encodeURIComponent(since)}` +
+    `&is_spam=is.false` +
+    `&${FILTRO_CON_ASESOR}` +
+    `&order=created_time.asc&limit=${limit}`;
+  const r = await fetch(url, { headers: headers() });
+  if (!r.ok) throw new Error(`Supabase pendientes Kommo B2B -> HTTP ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+/**
  * Tickets YA enviados a Kommo (tienen lead) cuyo Asesor NO cumple el filtro
  * de "sin asesor" (ver FILTRO_SIN_ASESOR) -- incluye asesor con nombre real Y
  * asesor null/vacio (nunca se enriquecio o el campo viene sin valor). Son los
@@ -177,7 +229,7 @@ export async function getTicketsKommoConAsesor({ limit = 20000 } = {}) {
   const url =
     `${SUPABASE_URL}/rest/v1/tickets?select=id,ticket_number,asesor,kommo_lead_id` +
     `&kommo_lead_id=not.is.null` +
-    `&or=(asesor.is.null,and(asesor.not.ilike.*no*tengo*,asesor.not.ilike.*sin*asesor*))`;
+    `&or=(asesor.is.null,and(asesor.not.ilike.*no*tengo*,asesor.not.ilike.*sin*asesor*,asesor.not.ilike.*seguros*venezuela*))`;
   const PAGE = 1000;
   const out = [];
   for (let from = 0; from < limit; from += PAGE) {

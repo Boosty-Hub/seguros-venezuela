@@ -437,3 +437,9 @@ verify_jwt = false
 
 [functions.follow-up-scan]
 verify_jwt = false
+
+[functions.zoho-sync]
+verify_jwt = false
+
+[functions.zoho-kommo-push]
+verify_jwt = false

@@ -17,6 +17,7 @@ import {
   moveLeadStage,
   fetchPipelineStages,
   fetchEntityFields,
+  runSalesbot,
   type KommoStageLite,
   type KommoFieldLite,
 } from "../_shared/kommo.ts";
@@ -248,6 +249,7 @@ type CrmGate = {
   moveStage: boolean;
   updateLead: boolean;
   updateContact: boolean;
+  sendImage: boolean;
 };
 
 type CrmContext = {
@@ -260,9 +262,61 @@ type CrmContext = {
   internalLeadId?: string;
   currentKommoStageId?: number | null;
   draftId?: string;
+  // Campo/salesbot de imágenes (kommo_publish_config.image_field_id / image_salesbot_id)
+  imageFieldId?: number | null;
+  imageSalesbotId?: number | null;
+  // Etapas pausadas (kommo_publish_config.ignored_stage_ids) — si mover_etapa
+  // aterriza al lead en una de estas, se marca leads.transferred_to_human_at
+  // (0058_transferred_to_human.sql): la señal de "esto lo tomó un humano".
+  pauseStageIds?: number[];
+  // Colector mutable: enviar_imagen empuja acá cada imagen enviada, para que
+  // quede visible en la conversación del sistema (agent_metadata.images_sent).
+  imagesSent?: string[];
 };
 
-const CRM_TOOL_NAMES = new Set(["mover_etapa", "actualizar_lead", "actualizar_contacto"]);
+const CRM_TOOL_NAMES = new Set(["mover_etapa", "actualizar_lead", "actualizar_contacto", "enviar_imagen"]);
+
+// Mapa tema → imagen de paso a paso (Supabase Storage, bucket público
+// `agent-media`). Única fuente de verdad de qué URL corresponde a cada
+// tema del enum declarado en la tool `enviar_imagen` (migración 0057).
+const IMAGE_TRIGGERS: Record<string, { label: string; url: string }> = {
+  registro_segven_linea: {
+    label: "Registro de SEGVEN en Línea",
+    url: "https://lwqqnnefywsjaatuyjma.supabase.co/storage/v1/object/public/agent-media/pasos/registro-segven-linea.jpg",
+  },
+  reporte_pagos_linea: {
+    label: "Reporte de Pagos en Línea",
+    url: "https://lwqqnnefywsjaatuyjma.supabase.co/storage/v1/object/public/agent-media/pasos/reporte-pagos-linea.jpg",
+  },
+  servicios_especializados: {
+    label: "Servicios especializados",
+    url: "https://lwqqnnefywsjaatuyjma.supabase.co/storage/v1/object/public/agent-media/pasos/servicios-especializados.jpg",
+  },
+  claves_emergencia: {
+    label: "Claves de emergencia",
+    url: "https://lwqqnnefywsjaatuyjma.supabase.co/storage/v1/object/public/agent-media/pasos/claves-emergencia.jpg",
+  },
+  amp_amd: {
+    label: "Solicitud de AMP y AMD",
+    url: "https://lwqqnnefywsjaatuyjma.supabase.co/storage/v1/object/public/agent-media/pasos/amp-amd.jpg",
+  },
+  activacion_cimeci: {
+    label: "Activación del servicio CIMECI",
+    url: "https://lwqqnnefywsjaatuyjma.supabase.co/storage/v1/object/public/agent-media/pasos/activacion-cimeci.jpg",
+  },
+  atencion_medica_digital: {
+    label: "Atención médica digital",
+    url: "https://lwqqnnefywsjaatuyjma.supabase.co/storage/v1/object/public/agent-media/pasos/atencion-medica-digital.jpg",
+  },
+  atencion_cliente_general: {
+    label: "Atención al cliente (reembolso, anulación de póliza, carta aval, RCV, notificación de pago, cuadro de póliza, emergencias)",
+    url: "https://lwqqnnefywsjaatuyjma.supabase.co/storage/v1/object/public/agent-media/pasos/atencion-cliente-general.jpg",
+  },
+  carta_aval_reembolso: {
+    label: "Carta Aval / Reembolso",
+    url: "https://lwqqnnefywsjaatuyjma.supabase.co/storage/v1/object/public/agent-media/pasos/carta-aval-reembolso.jpg",
+  },
+};
 const CRM_TTL_MS = 60_000;
 let stagesCache: { items: KommoStageLite[]; loadedAt: number } | null = null;
 let leadFieldsCache: { items: KommoFieldLite[]; loadedAt: number } | null = null;
@@ -345,9 +399,18 @@ async function runCrmTool(
           draft_id: ctx.draftId ?? null,
         });
         // Actualizar kommo_stage_id en leads para mantener el estado en sync
+        const leadUpdate: Record<string, unknown> = { kommo_stage_id: target.id };
+        // Si el destino es una etapa pausada, este es el momento de handoff:
+        // el agente deja de responder ahí y un humano toma la conversación.
+        // Marca histórica (no se limpia si luego se mueve a otra etapa) — la
+        // usan el tag/filtro de /inbox y la trazabilidad de /analitica.
+        if (ctx.pauseStageIds?.includes(target.id)) {
+          leadUpdate.transferred_to_human_at = new Date().toISOString();
+          leadUpdate.transferred_to_human_stage = target.name;
+        }
         await supabase
           .from("leads")
-          .update({ kommo_stage_id: target.id })
+          .update(leadUpdate)
           .eq("id", ctx.internalLeadId);
       } catch (evErr) {
         console.warn("lead_stage_events insert (agente) — fail-open:", evErr instanceof Error ? evErr.message : String(evErr));
@@ -387,6 +450,24 @@ async function runCrmTool(
     }
     await patchContactField(ctx.kommoContactId, f.id, value, ctx.domain, ctx.token);
     return `Listo: actualicé el campo "${f.name}" del contacto a "${value}".`;
+  }
+
+  if (name === "enviar_imagen") {
+    if (!ctx.gate.sendImage) return "La acción 'enviar imagen de pasos' está desactivada por el operador. No la realices ni la menciones.";
+    if (ctx.kommoLeadId == null) return "No tengo el id de Kommo de este lead; no puedo enviar la imagen.";
+    if (!ctx.imageFieldId || !ctx.imageSalesbotId) {
+      return "El envío de imágenes no está configurado (falta el campo o el salesbot). No la realices.";
+    }
+    const tema = String(input.tema ?? "").trim();
+    const trigger = IMAGE_TRIGGERS[tema];
+    if (!trigger) {
+      const opciones = Object.keys(IMAGE_TRIGGERS).join(", ");
+      return `Tema de imagen desconocido: "${tema}". Temas válidos: ${opciones}.`;
+    }
+    await patchLeadField(ctx.kommoLeadId, ctx.imageFieldId, trigger.url, ctx.domain, ctx.token);
+    await runSalesbot(ctx.imageSalesbotId, ctx.kommoLeadId, ctx.domain, ctx.token);
+    ctx.imagesSent?.push(trigger.label);
+    return `Listo: envié la imagen de pasos de "${trigger.label}".`;
   }
 
   return `Tool CRM desconocida: "${name}".`;
@@ -567,7 +648,7 @@ async function maybeFanOut(): Promise<void> {
 }
 
 const MSG_SELECT =
-  "id, lead_id, content, source, vertical_id, classification, requires_human_review, created_at, is_comment, verticals(slug, auto_reply, requires_review)";
+  "id, lead_id, content, source, vertical_id, classification, requires_human_review, created_at, is_comment, verticals(slug, auto_reply, requires_review, system_prompt)";
 
 // deno-lint-ignore no-explicit-any
 type MsgRow = any;
@@ -607,7 +688,7 @@ type Batch = {
   leadId: string;
   messages: MsgRow[];
   verticalId: string | null;
-  vertical: { slug: string; auto_reply: boolean; requires_review: boolean };
+  vertical: { slug: string; auto_reply: boolean; requires_review: boolean; system_prompt: string | null };
 };
 
 // Cooldown + tope por lead. cooldownSeconds=0 y maxPerLead=0 → desactivado.
@@ -936,6 +1017,10 @@ function buildContext(opts: {
   messages: Array<{ content: string; created_at: string }>;
   history: string;
   verticalSlug: string;
+  // Instrucciones específicas del producto/vertical clasificada (columna
+  // verticals.system_prompt) — editable en /verticales. Antes de este fix se
+  // guardaba pero NUNCA se le mandaba al agente (solo viajaba el slug).
+  verticalPrompt?: string | null;
   channel: string | null;
   classification: Record<string, unknown> | null;
   masterPath: string;
@@ -987,7 +1072,7 @@ ${opts.dreamsDigest ? `aprendizajes_del_operador (reglas del operador aprendidas
 lead_id: ${opts.lead.id}
 lead_name: ${opts.lead.display_name ?? "(desconocido)"}
 vertical: ${opts.verticalSlug}
-channel: ${opts.channel ?? "unknown"}
+${opts.verticalPrompt && opts.verticalPrompt.trim() ? `instrucciones_de_la_vertical_activa (reglas específicas de "${opts.verticalSlug}" definidas por el operador — SIEMPRE aplícalas para esta conversación, tienen prioridad sobre tu voz general pero NO sobre aprendizajes_del_operador):\n${opts.verticalPrompt.trim()}\n` : ""}channel: ${opts.channel ?? "unknown"}
 intent: ${cls.intent ?? "?"}
 urgency: ${cls.urgency ?? "?"}
 toxicity: ${cls.toxicity ?? "?"}
@@ -1005,28 +1090,20 @@ Tu MENSAJE FINAL debe ser SOLO el texto que se envía al lead. Sin preámbulo.`;
 }
 
 // ---------------- Saneador de emoji (compatibilidad Kommo/WhatsApp) ----------------
-// Kommo NO acepta bien TODO emoji: los simples de un solo codepoint (👋 👍 🎉
-// 📞 ⚠️ ✅ ❤️) pasan sin problema, pero las SECUENCIAS compuestas — con
-// Zero-Width-Joiner (familias 👨‍👩‍👧‍👦, "hombre de negocios" 🧑‍💼),
-// modificadores de tono de piel (👍🏽), y banderas de país (🇻🇪, par de
-// regional indicators) — se rompen o llegan mal al pasar por el puente
-// Kommo → WhatsApp Business API / Instagram. Doble capa de defensa: el
-// prompt (CORE_SCAFFOLD) le pide al modelo usar solo emoji simples, y esto
-// sanea el texto final pase lo que pase (el modelo puede no obedecer).
-const ZWJ = "‍";
-const SKIN_TONE_MODIFIERS = /[\u{1F3FB}-\u{1F3FF}]/gu;
-// Regional indicator symbols (banderas): siempre vienen de a pares.
-const REGIONAL_INDICATORS = /[\u{1F1E6}-\u{1F1FF}]{2}/gu;
-// Cualquier secuencia unida por ZWJ: se borra COMPLETA (no solo el ZWJ) para
-// no dejar emoji sueltos y desordenados donde el usuario esperaba uno solo
-// compuesto (ej. "🧑‍⚕️" mal saneado a medias se ve peor que borrado entero).
-const ZWJ_SEQUENCE = new RegExp(`[^\\s]*${ZWJ}[^\\s]*`, "gu");
+// Este código asumía que un emoji simple de un solo codepoint (👋 👍 🎉 📞 ⚠️
+// ✅ ❤️) pasaba sin problema por el puente Kommo → WhatsApp/Instagram, y que
+// solo las secuencias compuestas (ZWJ, tono de piel, banderas) se rompían.
+// FALSO — comprobado en producción (2026-08-26, lead #14348024): un 👋 suelto
+// hizo que Kommo GUARDARA MAL el custom field (llegó a truncar el valor
+// completo desde el punto del emoji, ej. "Test A 👋 resto" quedó como
+// "Test A " — reproducido en vivo contra la API real). No hay emoji "seguro"
+// conocido: se sanean TODOS antes de escribir a Kommo, sin excepción.
+const EMOJI_RANGES =
+  /[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{2300}-\u{23FF}\u{FE0F}\u{200D}]/gu;
 
 function sanitizeEmojiForKommo(text: string): string {
   return text
-    .replace(ZWJ_SEQUENCE, "")
-    .replace(REGIONAL_INDICATORS, "")
-    .replace(SKIN_TONE_MODIFIERS, "") // deja el emoji base (tono default), quita solo el modificador
+    .replace(EMOJI_RANGES, "")
     .replace(/[ \t]{2,}/g, " ") // colapsa espacios que quedaron dobles al borrar
     .replace(/ \n/g, "\n")
     .trim();
@@ -1039,6 +1116,7 @@ type Outcome = {
   toolCalls: number;
   durationMs: number;
   sessionId: string;
+  imagesSent: string[];
 };
 
 async function runAgent(opts: {
@@ -1056,6 +1134,9 @@ async function runAgent(opts: {
   crm: CrmGate;
   shopify: ShopifyGate;
   bcvEnabled: boolean;
+  imageFieldId: number | null;
+  imageSalesbotId: number | null;
+  pauseStageIds: number[];
   // Vertical de la conversación: acota search_kb a sus docs + los globales.
   verticalId: string | null;
   // Campos para registrar lead_stage_events cuando el agente mueve etapas
@@ -1104,6 +1185,7 @@ async function runAgent(opts: {
   // 3) Loop de eventos
   let responseText = "";
   let toolCalls = 0;
+  const imagesSent: string[] = [];
 
   for await (const event of stream) {
     // deno-lint-ignore no-explicit-any
@@ -1137,6 +1219,10 @@ async function runAgent(opts: {
                 internalLeadId: opts.leadId,
                 currentKommoStageId: opts.currentKommoStageId,
                 draftId: opts.draftId,
+                imageFieldId: opts.imageFieldId,
+                imageSalesbotId: opts.imageSalesbotId,
+                pauseStageIds: opts.pauseStageIds,
+                imagesSent,
               });
         } else if (SHOPIFY_TOOL_NAMES.has(ev.name)) {
           // Tools internas que consultan/venden sobre Shopify. Gate por config.
@@ -1217,6 +1303,7 @@ async function runAgent(opts: {
     toolCalls,
     durationMs: Date.now() - start,
     sessionId: session.id,
+    imagesSent,
   };
 }
 
@@ -1243,7 +1330,7 @@ Deno.serve(async (req: Request) => {
   const { data: cfg } = await supabase
     .from("kommo_publish_config")
     .select(
-      "agent_enabled, bypass_review, publishing_enabled, response_cooldown_seconds, max_responses_per_lead, cooldown_window_hours, ignored_stage_ids, response_debounce_seconds, answer_max_age_hours, crm_actions_enabled, crm_can_move_stage, crm_can_update_lead, crm_can_update_contact, shopify_actions_enabled, shopify_can_search, shopify_can_orders, shopify_can_checkout, bcv_rate_enabled, comment_instructions, comment_reply_enabled, comment_reply_rules, respond_to_comments"
+      "agent_enabled, bypass_review, publishing_enabled, response_cooldown_seconds, max_responses_per_lead, cooldown_window_hours, ignored_stage_ids, response_debounce_seconds, answer_max_age_hours, crm_actions_enabled, crm_can_move_stage, crm_can_update_lead, crm_can_update_contact, crm_can_send_image, image_field_id, image_salesbot_id, shopify_actions_enabled, shopify_can_search, shopify_can_orders, shopify_can_checkout, bcv_rate_enabled, comment_instructions, comment_reply_enabled, comment_reply_rules, respond_to_comments"
     )
     .eq("is_active", true)
     .maybeSingle();
@@ -1293,6 +1380,12 @@ Deno.serve(async (req: Request) => {
   const ignoredStageIds: number[] | undefined = forceReview
     ? undefined
     : (((cfg?.ignored_stage_ids ?? []) as unknown[]).map(Number).filter((n) => Number.isFinite(n)));
+  // Igual que ignoredStageIds pero SIEMPRE poblado (no depende de forceReview)
+  // — lo necesita mover_etapa para detectar el handoff a humano incluso en
+  // una corrida de revisión explícita.
+  const pauseStageIds: number[] = ((cfg?.ignored_stage_ids ?? []) as unknown[])
+    .map(Number)
+    .filter((n) => Number.isFinite(n));
 
   // Gate maestro de comentarios (0048). Default OFF: los comentarios no se
   // responden (ni DM ni público). comment_reply_enabled solo suma la
@@ -1317,7 +1410,10 @@ Deno.serve(async (req: Request) => {
     moveStage: cfg?.crm_can_move_stage === true,
     updateLead: cfg?.crm_can_update_lead === true,
     updateContact: cfg?.crm_can_update_contact === true,
+    sendImage: cfg?.crm_can_send_image === true,
   };
+  const imageFieldId = (cfg?.image_field_id as number | null) ?? null;
+  const imageSalesbotId = (cfg?.image_salesbot_id as number | null) ?? null;
 
   // Gate de Shopify (Módulo 4). Default OFF.
   const shopify: ShopifyGate = {
@@ -1456,6 +1552,7 @@ Deno.serve(async (req: Request) => {
         })),
         history,
         verticalSlug: vertical.slug,
+        verticalPrompt: vertical.system_prompt ?? null,
         channel: latestMsg.source,
         classification: latestMsg.classification as Record<string, unknown> | null,
         masterPath,
@@ -1488,6 +1585,9 @@ Deno.serve(async (req: Request) => {
         crm,
         shopify,
         bcvEnabled: cfg?.bcv_rate_enabled === true,
+        imageFieldId,
+        imageSalesbotId,
+        pauseStageIds,
         verticalId: batch.verticalId,
         currentKommoStageId: lead.kommo_stage_id != null ? Number(lead.kommo_stage_id) : null,
         draftId: draft.id,
@@ -1583,6 +1683,7 @@ Deno.serve(async (req: Request) => {
             vertical: vertical.slug,
             ...(batchHasComment ? { from_comment: true } : {}),
             ...(publicReply ? { public_reply: publicReply } : {}),
+            ...(outcome.imagesSent.length > 0 ? { images_sent: outcome.imagesSent } : {}),
           },
         })
         .eq("id", draft.id)

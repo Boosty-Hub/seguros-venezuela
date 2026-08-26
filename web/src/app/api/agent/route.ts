@@ -52,7 +52,6 @@ export async function POST(request: Request) {
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   const form = await request.formData();
-  const systemPrompt = form.get("system_prompt")?.toString() ?? "";
   const operatorName = form.get("operator_name")?.toString().trim() ?? "";
   let agentName = form.get("agent_name")?.toString().trim() ?? "";
   const agentLabel = form.get("agent_label")?.toString().trim() ?? "";
@@ -80,7 +79,6 @@ export async function POST(request: Request) {
   try {
     await setConfigValues(
       {
-        SYSTEM_PROMPT: systemPrompt,
         OPERATOR_NAME: operatorName,
         AGENT_NAME: agentName,
         NEXT_PUBLIC_AGENT_LABEL: agentLabel,

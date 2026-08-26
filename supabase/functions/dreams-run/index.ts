@@ -136,7 +136,7 @@ Cada learning lleva además una "severity":
 - "sugerencia": refuerzo de algo que funcionó o una mejora opcional de estilo/flujo.
 
 Reglas:
-- Escribe los learnings en el mismo registro/voz que define el system prompt del agente.
+- TODO en ESPAÑOL (registro venezolano, el mismo que define el system prompt del agente) — el "title", el "content" Y el "evidence", sin excepción. NUNCA en inglés, aunque el título deba ser slug-friendly (usa palabras en español separadas por guion bajo, ej. "mensaje_vacio_por_restriccion_api", NUNCA "empty_message_api_restriction").
 - NO inventes aprendizajes. Si no hay patrón claro, devuelve learnings: [].
 - Cada aprendizaje debe ser ESPECÍFICO, no genérico ("siempre sé empático" NO sirve).
 - Cita brevemente la evidencia (qué turno/conversación la respalda).
@@ -405,7 +405,7 @@ async function runDreams(
   const response = await anthropic.messages.create({
     model: dreamsModel,
     max_tokens: 4096,
-    system: "Eres un analista riguroso que destila aprendizajes de conversaciones reales. No alucines.",
+    system: "Eres un analista riguroso que destila aprendizajes de conversaciones reales. No alucines. Escribes SIEMPRE en español (registro venezolano) — título, contenido y evidencia — nunca en inglés, sin importar en qué idioma esté razonando internamente.",
     messages: [{ role: "user", content: dreamPrompt(periodLabel, transcript, operator) }],
     output_config: {
       format: {

@@ -903,7 +903,7 @@ function SystemToolCard({ tool }: { tool: AgentTool }) {
       <div className="shrink-0">
         {isManaged ? (
           <a
-            href="/agent?tab=acciones"
+            href="/agent?tab=agente"
             className="inline-flex items-center rounded-full bg-violet-100 px-2.5 py-1 text-[11px] font-medium text-violet-700 transition-colors hover:bg-violet-200"
           >
             Configurar →
@@ -952,7 +952,7 @@ function SystemToolsPanel({ tools }: { tools: AgentTool[] }) {
               Acciones en el CRM
             </h3>
             <a
-              href="/agent?tab=acciones"
+              href="/agent?tab=agente"
               className="text-xs font-medium text-violet-700 hover:underline"
             >
               Activar / configurar →
@@ -961,7 +961,7 @@ function SystemToolsPanel({ tools }: { tools: AgentTool[] }) {
           <p className="text-xs text-neutral-500">
             El agente puede operar Kommo (mover de etapa, completar datos) cuando una vertical o su
             voz se lo indica. El interruptor de seguridad está en{" "}
-            <a href="/agent?tab=acciones" className="font-medium text-violet-700 underline">
+            <a href="/agent?tab=agente" className="font-medium text-violet-700 underline">
               Agente → Acciones
             </a>
             .
@@ -981,7 +981,7 @@ function SystemToolsPanel({ tools }: { tools: AgentTool[] }) {
               Tienda Shopify
             </h3>
             <a
-              href="/agent?tab=acciones"
+              href="/agent?tab=agente"
               className="text-xs font-medium text-violet-700 hover:underline"
             >
               Activar / configurar →
@@ -994,7 +994,7 @@ function SystemToolsPanel({ tools }: { tools: AgentTool[] }) {
               Configuración
             </a>{" "}
             y activa las capacidades en{" "}
-            <a href="/agent?tab=acciones" className="font-medium text-violet-700 underline">
+            <a href="/agent?tab=agente" className="font-medium text-violet-700 underline">
               Agente → Acciones
             </a>
             .

@@ -28,11 +28,14 @@ export function VerticalKbPanel({ verticalId, docs }: { verticalId: string; docs
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
 
+  const missingTitle = !title.trim();
+  const missingSource = !file && !content.trim();
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    if (!title.trim()) return setError("Título requerido");
-    if (!file && !content.trim()) return setError("Sube un archivo o pega contenido");
+    if (missingTitle) return setError("Falta el título — escríbelo antes de indexar.");
+    if (missingSource) return setError("Falta el archivo o el contenido — sube un archivo o pega texto antes de indexar.");
 
     setBusy(true);
     const form = new FormData();
@@ -121,11 +124,22 @@ export function VerticalKbPanel({ verticalId, docs }: { verticalId: string; docs
           placeholder="… o pega contenido en markdown"
           className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm font-mono focus:border-neutral-900 focus:ring-1 focus:ring-neutral-900 focus:outline-none"
         />
-        {error && <p className="text-xs text-red-600">{error}</p>}
+        {error && (
+          <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
+            ⚠ {error}
+          </p>
+        )}
         <button
           type="submit"
-          disabled={busy}
-          className="inline-flex items-center justify-center gap-2 rounded-lg bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-neutral-800 disabled:opacity-50"
+          disabled={busy || missingTitle || missingSource}
+          title={
+            missingTitle
+              ? "Falta el título"
+              : missingSource
+              ? "Falta el archivo o el contenido"
+              : undefined
+          }
+          className="inline-flex items-center justify-center gap-2 rounded-lg bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-neutral-800 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {busy ? "Procesando…" : "Indexar en esta vertical"}
         </button>

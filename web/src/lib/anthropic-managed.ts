@@ -30,20 +30,41 @@ export class AnthropicHttpError extends Error {
   }
 }
 
+async function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+// Reintenta 5xx/429 (fallas transitorias del lado de Anthropic o throttling)
+// hasta 2 veces con backoff corto. 4xx (excepto 429) no reintenta — es un
+// error real (path inválido, etc.) que un retry no arregla.
 async function call(
   apiKey: string,
   method: "GET" | "POST" | "DELETE",
   path: string,
-  body?: unknown
+  body?: unknown,
+  attempt = 1
 ): Promise<Record<string, unknown>> {
   const sep = path.includes("?") ? "&" : "?";
-  const res = await fetch(`${BASE}${path}${sep}beta=true`, {
-    method,
-    headers: authHeaders(apiKey),
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}${sep}beta=true`, {
+      method,
+      headers: authHeaders(apiKey),
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch (err) {
+    if (attempt < 3) {
+      await sleep(300 * attempt);
+      return call(apiKey, method, path, body, attempt + 1);
+    }
+    throw err;
+  }
   const text = await res.text();
   if (!res.ok) {
+    if ((res.status >= 500 || res.status === 429) && attempt < 3) {
+      await sleep(300 * attempt);
+      return call(apiKey, method, path, body, attempt + 1);
+    }
     throw new AnthropicHttpError(
       `Anthropic ${method} ${path} → ${res.status}: ${text.slice(0, 400)}`,
       res.status

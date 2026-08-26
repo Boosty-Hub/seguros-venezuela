@@ -66,6 +66,7 @@ export type ToolGateFlags = {
   crm_can_add_note?: boolean | null;
   crm_can_handoff?: boolean | null;
   crm_can_tag?: boolean | null;
+  crm_can_send_image?: boolean | null;
   shopify_actions_enabled?: boolean | null;
   shopify_can_search?: boolean | null;
   shopify_can_orders?: boolean | null;

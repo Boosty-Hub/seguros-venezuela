@@ -158,6 +158,15 @@ Deno.serve(async (req) => {
     }
 
     const n = await upsert(rows);
+
+    // El push a Kommo (B2C/B2B según el campo Asesor) NO se encadena desde
+    // acá: se probó con fetch + EdgeRuntime.waitUntil (fire-and-forget) y no
+    // quedó registro confiable de que el request llegara a completarse antes
+    // de que el runtime matara la función. En vez de dejar un "encadenado"
+    // que aparenta funcionar sin estarlo, la cobertura real es el cron
+    // independiente "zoho-kommo-push-safety" (cada 5 min, ver migración
+    // 0060_zoho_kommo_cron.sql) — drena lo que este sync acaba de traer en,
+    // como mucho, unos minutos de diferencia.
     return new Response(JSON.stringify({ ok: true, upserted: n }), {
       headers: { "Content-Type": "application/json" },
     });

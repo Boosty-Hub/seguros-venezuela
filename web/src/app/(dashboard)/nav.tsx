@@ -5,11 +5,11 @@ import { usePathname } from "next/navigation";
 import { useState, useEffect } from "react";
 import {
   Menu, X, Inbox, Users, Target, Sparkles, Stars,
-  Bot, Bell, LogOut, BarChart3, ChevronRight,
+  Bot, LogOut, BarChart3, ChevronRight,
   TrendUp,
 } from "@/components/ui";
 import { BcvBanner } from "./bcv-banner";
-import { ControlTower } from "./control-tower";
+import { ControlTowerButton } from "./control-tower";
 
 type BcvData = { rate: number; source: string; fetchedAt: string };
 
@@ -35,8 +35,8 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/inbox", label: "Inbox", icon: Inbox },
       { href: "/leads", label: "Leads", icon: Users },
-      // Alertas es un buzón de monitoreo de solo lectura, no configuración → vive en Operación.
-      { href: "/alerts", label: "Alertas", icon: Bell },
+      // Trazabilidad del funnel del agente (entrantes → atendidos → transferidos → ganados).
+      { href: "/analitica", label: "Analítica", icon: BarChart3 },
       // Pipeline de Zoho Desk: mismos datos que el dashboard público (embudo/kanban),
       // vive acá para no tener que saltar a otra URL/login separado.
       { href: "/pipeline", label: "Pipeline Zoho", icon: TrendUp },
@@ -68,19 +68,16 @@ export const NAV_GROUPS: NavGroup[] = [
 function NavItemLink({
   item,
   pathname,
-  alertsCount,
   onNavigate,
   collapsed = false,
 }: {
   item: NavItem;
   pathname: string;
-  alertsCount: number;
   onNavigate?: () => void;
   collapsed?: boolean;
 }) {
   const active = pathname === item.href || pathname.startsWith(item.href + "/");
   const Icon = item.icon;
-  const showAlertBadge = item.href === "/alerts" && alertsCount > 0;
   return (
     <Link
       href={item.href}
@@ -104,32 +101,17 @@ function NavItemLink({
           size={17}
           className={active ? "text-brand" : "text-neutral-400 group-hover:text-neutral-600"}
         />
-        {/* Colapsado: el contador se reduce a un punto rojo sobre el ícono */}
-        {collapsed && showAlertBadge && (
-          <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-red-500 ring-2 ring-white" />
-        )}
       </span>
       {!collapsed && <span className="flex-1">{item.label}</span>}
-      {!collapsed && showAlertBadge && (
-        <span
-          className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${
-            active ? "bg-white text-brand-strong" : "bg-red-500 text-white"
-          }`}
-        >
-          {alertsCount}
-        </span>
-      )}
     </Link>
   );
 }
 
 function NavGroups({
-  alertsCount,
   onNavigate,
   collapsed = false,
   isAdmin = true,
 }: {
-  alertsCount: number;
   onNavigate?: () => void;
   collapsed?: boolean;
   isAdmin?: boolean;
@@ -154,7 +136,6 @@ function NavGroups({
                 key={item.href}
                 item={item}
                 pathname={pathname}
-                alertsCount={alertsCount}
                 onNavigate={onNavigate}
                 collapsed={collapsed}
               />
@@ -233,13 +214,11 @@ function NavFooter({
 
 export function SidebarNav({
   email,
-  alertsCount,
   label,
   bcv,
   isAdmin = true,
 }: {
   email: string;
-  alertsCount: number;
   label?: string;
   bcv?: BcvData;
   isAdmin?: boolean;
@@ -283,7 +262,7 @@ export function SidebarNav({
             {agentLabel}
           </p>
         )}
-        <ControlTower />
+        <ControlTowerButton />
         <button
           type="button"
           onClick={toggle}
@@ -296,7 +275,7 @@ export function SidebarNav({
         </button>
       </div>
 
-      <NavGroups alertsCount={alertsCount} collapsed={collapsed} isAdmin={isAdmin} />
+      <NavGroups collapsed={collapsed} isAdmin={isAdmin} />
 
       {/* Pill BCV compacto sobre el footer de usuario (oculto al colapsar) */}
       {bcv && !collapsed && (
@@ -312,13 +291,11 @@ export function SidebarNav({
 
 export function MobileNav({
   email,
-  alertsCount,
   label,
   bcv,
   isAdmin = true,
 }: {
   email: string;
-  alertsCount: number;
   label?: string;
   bcv?: BcvData;
   isAdmin?: boolean;
@@ -340,7 +317,7 @@ export function MobileNav({
           {bcv && (
             <BcvBanner rate={bcv.rate} source={bcv.source} fetchedAt={bcv.fetchedAt} variant="mini" />
           )}
-          <ControlTower />
+          <ControlTowerButton />
           <button
             type="button"
             aria-label="Abrir menú"
@@ -379,7 +356,6 @@ export function MobileNav({
               </button>
             </div>
             <NavGroups
-              alertsCount={alertsCount}
               onNavigate={() => setOpen(false)}
               isAdmin={isAdmin}
             />

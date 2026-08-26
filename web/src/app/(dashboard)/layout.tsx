@@ -10,6 +10,8 @@ import { UpdatesBanner } from "./updates-banner";
 import { EmbedTabsNav } from "./embed-tabs-nav";
 import { NavProgress } from "./nav-progress";
 import { SetupDrawer } from "./setup-drawer";
+import { ControlTowerProvider } from "./control-tower-context";
+import { ControlTowerPanel } from "./control-tower";
 
 export default async function DashboardLayout({
   children,
@@ -20,20 +22,13 @@ export default async function DashboardLayout({
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  const [{ count: alertsCount }, { data: pubCfg }] = await Promise.all([
-    supabase
-      .from("alerts")
-      .select("*", { count: "exact", head: true })
-      .is("acknowledged_at", null),
-    supabase
-      .from("kommo_publish_config")
-      .select("bcv_rate_enabled")
-      .eq("is_active", true)
-      .maybeSingle(),
-  ]);
+  const { data: pubCfg } = await supabase
+    .from("kommo_publish_config")
+    .select("bcv_rate_enabled")
+    .eq("is_active", true)
+    .maybeSingle();
 
   const email = user?.email ?? "";
-  const alerts = alertsCount ?? 0;
   const isAdmin = getRole(user) === "admin";
   // Resolve the branding label DB-first (editable from /agent) with env
   // fallback. Resolved server-side so it does NOT depend on the build-time
@@ -58,28 +53,36 @@ export default async function DashboardLayout({
 
   if (isEmbed) {
     return (
-      <div className="flex flex-col h-dvh overflow-hidden bg-neutral-50">
-        <Suspense fallback={null}>
-          <NavProgress />
-        </Suspense>
-        <EmbedTabsNav label={label} alertsCount={alerts} isAdmin={isAdmin} />
-        <main className="flex-1 min-w-0 overflow-y-auto">{children}</main>
-      </div>
+      <ControlTowerProvider>
+        <div className="flex h-dvh overflow-hidden bg-neutral-50">
+          <div className="flex min-w-0 flex-1 flex-col">
+            <Suspense fallback={null}>
+              <NavProgress />
+            </Suspense>
+            <EmbedTabsNav label={label} isAdmin={isAdmin} />
+            <main className="flex-1 min-w-0 overflow-y-auto">{children}</main>
+          </div>
+          <ControlTowerPanel />
+        </div>
+      </ControlTowerProvider>
     );
   }
 
   return (
-    <div className="flex h-dvh overflow-hidden bg-neutral-50">
-      <Suspense fallback={null}>
-        <NavProgress />
-      </Suspense>
-      <SidebarNav email={email} alertsCount={alerts} label={label} bcv={bcv ?? undefined} isAdmin={isAdmin} />
-      <div className="flex min-w-0 flex-1 flex-col">
-        <MobileNav email={email} alertsCount={alerts} label={label} bcv={bcv ?? undefined} isAdmin={isAdmin} />
-        <UpdatesBanner autoUpdate={autoUpdate} />
-        <main className="flex-1 min-w-0 overflow-y-auto">{children}</main>
+    <ControlTowerProvider>
+      <div className="flex h-dvh overflow-hidden bg-neutral-50">
+        <Suspense fallback={null}>
+          <NavProgress />
+        </Suspense>
+        <SidebarNav email={email} label={label} bcv={bcv ?? undefined} isAdmin={isAdmin} />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <MobileNav email={email} label={label} bcv={bcv ?? undefined} isAdmin={isAdmin} />
+          <UpdatesBanner autoUpdate={autoUpdate} />
+          <main className="flex-1 min-w-0 overflow-y-auto">{children}</main>
+        </div>
+        {showSetupDrawer && <SetupDrawer state={setupState} />}
+        <ControlTowerPanel />
       </div>
-      {showSetupDrawer && <SetupDrawer state={setupState} />}
-    </div>
+    </ControlTowerProvider>
   );
 }

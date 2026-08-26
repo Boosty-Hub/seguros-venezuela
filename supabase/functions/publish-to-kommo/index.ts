@@ -58,7 +58,7 @@ async function pickPending(publishFrom: string | null, limit = 10) {
   let q = supabase
     .from("drafts")
     .select(
-      "id, message_id, body, status, agent_metadata, messages(lead_id, leads(kommo_lead_id, display_name))"
+      "id, message_id, body, status, agent_metadata, messages!drafts_message_id_fkey(lead_id, leads(kommo_lead_id, display_name))"
     )
     .eq("status", "approved")
     .is("sent_at", null);

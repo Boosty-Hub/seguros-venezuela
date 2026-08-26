@@ -33,7 +33,6 @@ export default async function AgentPage({
   };
 }) {
   const cfg = await configValues([
-    "SYSTEM_PROMPT",
     "OPERATOR_NAME",
     "AGENT_NAME",
     "NEXT_PUBLIC_AGENT_LABEL",
@@ -71,7 +70,7 @@ export default async function AgentPage({
     supabase
       .from("kommo_publish_config")
       .select(
-        "response_cooldown_seconds, max_responses_per_lead, cooldown_window_hours, ignored_channels, ignored_stage_ids, response_debounce_seconds, answer_max_age_hours, respond_to_images, respond_to_documents, respond_to_audio, agent_off_field_id, agent_off_field_name, crm_actions_enabled, crm_can_move_stage, crm_can_update_lead, crm_can_update_contact, shopify_actions_enabled, shopify_can_search, shopify_can_orders, shopify_can_checkout, bcv_rate_enabled, respond_to_comments, comment_reply_enabled, comment_salesbot_id, comment_field_id, comment_reply_rules, comment_instructions, comment_source_ids, agent_enabled, publishing_enabled, bypass_review, auto_reply_mode"
+        "response_cooldown_seconds, max_responses_per_lead, cooldown_window_hours, ignored_channels, ignored_stage_ids, response_debounce_seconds, answer_max_age_hours, respond_to_images, respond_to_documents, respond_to_audio, agent_off_field_id, agent_off_field_name, crm_actions_enabled, crm_can_move_stage, crm_can_update_lead, crm_can_update_contact, crm_can_send_image, shopify_actions_enabled, shopify_can_search, shopify_can_orders, shopify_can_checkout, bcv_rate_enabled, respond_to_comments, comment_reply_enabled, comment_salesbot_id, comment_field_id, comment_reply_rules, comment_instructions, comment_source_ids, agent_enabled, publishing_enabled, bypass_review, auto_reply_mode"
       )
       .eq("is_active", true)
       .maybeSingle(),
@@ -138,6 +137,7 @@ export default async function AgentPage({
     moveStage: pubRes.data?.crm_can_move_stage === true,
     updateLead: pubRes.data?.crm_can_update_lead === true,
     updateContact: pubRes.data?.crm_can_update_contact === true,
+    sendImage: pubRes.data?.crm_can_send_image === true,
   };
   const shopify = {
     enabled: pubRes.data?.shopify_actions_enabled === true,
@@ -163,10 +163,14 @@ export default async function AgentPage({
   const sync = searchParams.sync;
   const errorMsg = searchParams.error;
   const provisioned = Boolean(cfg.ANTHROPIC_AGENT_ID);
-  const VALID_TABS = ["identidad", "filtros", "acciones", "kommo", "herramientas", "seguimiento", "ajustes"] as const;
-  const initialTab = (VALID_TABS as readonly string[]).includes(searchParams.tab ?? "")
-    ? (searchParams.tab as (typeof VALID_TABS)[number])
-    : "identidad";
+  const VALID_TABS = ["agente", "kommo", "herramientas", "seguimiento", "ajustes"] as const;
+  // Alias legacy: links viejos a las pestañas fusionadas (identidad/filtros/
+  // acciones) siguen aterrizando en "agente" en vez de romperse.
+  const rawTab = searchParams.tab ?? "";
+  const legacyTab = rawTab === "identidad" || rawTab === "filtros" || rawTab === "acciones" ? "agente" : rawTab;
+  const initialTab = (VALID_TABS as readonly string[]).includes(legacyTab)
+    ? (legacyTab as (typeof VALID_TABS)[number])
+    : "agente";
 
   return (
     <PageShell
@@ -261,7 +265,6 @@ export default async function AgentPage({
               operatorName: cfg.OPERATOR_NAME ?? "",
               agentName: cfg.AGENT_NAME ?? "",
               agentLabel: cfg.NEXT_PUBLIC_AGENT_LABEL ?? "",
-              systemPrompt: cfg.SYSTEM_PROMPT ?? "",
             }}
             liveSystemPrompt={liveSystemPrompt}
             liveSystemPromptError={liveSystemPromptError}

@@ -12,12 +12,13 @@ import {
   upsertTickets, updateSyncState, getCreatedWatermark, getOpenTicketsToRefresh,
   getTicketsMissingDetail, countTickets,
   getKommoState, getTicketsPendingKommo, markKommoSynced, getTicketsYaEnKommo,
+  getKommoB2BState, getTicketsPendingKommoB2B,
   upsertMetaLeads, getMetaState, getMetaLeadsPendingKommo, markMetaKommoSynced,
   getMetaLeadsYaEnZoho, insertSyncLog,
 } from './lib/supa.mjs';
 import { ticketToRow } from './lib/parse.mjs';
 import {
-  getAccount, resolveTarget, createLeads, addNotes, ticketToLead,
+  getAccount, resolveTarget, resolveTargetB2B, createLeads, addNotes, ticketToLead,
   metaLeadToLead, metaLeadToNote, kommoConfig,
 } from './lib/kommo.mjs';
 import { fetchMetaLeads, sheetsConfig } from './lib/sheets.mjs';
@@ -281,6 +282,120 @@ async function pushToKommo({ dryRun = false, limit = 200 } = {}) {
   return ok;
 }
 
+// -------- KOMMO B2B: corredores/intermediarios (asesor real) --------
+//
+// Espejo de pushToKommo() pero para el otro lado del filtro de Asesor:
+// tickets CON un corredor/asesor real asignado (cotizan via Sofi u otras
+// plataformas) van al embudo "VENTAS B2B" / etapa "DATA ZOHO DESK" en vez
+// de "VENTAS B2C". Corte propio (kommo_b2b_since), independiente del de B2C.
+async function pushToKommoB2B({ dryRun = false, limit = 200 } = {}) {
+  const { kommo_b2b_since: since } = await getKommoB2BState();
+  if (!since) {
+    log('KOMMO B2B: sin corte configurado. Ejecuta primero: node sync.mjs kommo-b2b-init [ISO|now]');
+    return 0;
+  }
+
+  const target = await resolveTargetB2B();
+  log(`KOMMO B2B${dryRun ? ' (DRY-RUN)' : ''} · embudo "${target.pipelineName}" (${target.pipelineId}) ` +
+      `· etapa "${target.statusName}" (${target.statusId}) · etiqueta "${kommoConfig.TAG}"`);
+  log(`  corte: tickets creados desde ${since}`);
+
+  let pend = await getTicketsPendingKommoB2B({ since, limit });
+  if (!pend.length) { log('  no hay tickets nuevos por enviar'); return 0; }
+  log(`  ${pend.length} ticket(s) por enviar`);
+
+  // Mismo control de duplicados que pushToKommo(): (1) contra lo ya creado
+  // en Kommo (por cualquiera de los dos embudos — la clave es la persona,
+  // no el destino), (2) dentro del propio lote.
+  const yaEnKommo = await getTicketsYaEnKommo({ since });
+  const mapaYa = new Map(yaEnKommo.map((x) => [x.ticket_id, x]));
+  const vinculados = pend.filter((p) => mapaYa.has(p.id));
+  if (vinculados.length) {
+    STATS.detalle.zoho_b2b_vinculados = (STATS.detalle.zoho_b2b_vinculados || 0) + vinculados.length;
+    log(`  ${vinculados.length} duplicado(s) de Zoho: se vinculan al lead existente en vez de crearse`);
+    if (!dryRun) {
+      await markKommoSynced(vinculados.map((v) => ({
+        sourceId: v.id, leadId: mapaYa.get(v.id).kommo_lead_id,
+      })));
+    }
+    pend = pend.filter((p) => !mapaYa.has(p.id));
+  }
+
+  const claveTicket = (t) =>
+    `${(t.subject || '').toLowerCase()}|` +
+    `${(t.email || '').toLowerCase() || String(t.phone || '').replace(/\D/g, '') || (t.contact_name || '').toLowerCase()}|` +
+    `${(t.titular || '').toLowerCase()}`;
+  const primeros = new Map();
+  const secundarios = [];
+  for (const t of pend) {
+    const k = claveTicket(t);
+    if (primeros.has(k)) secundarios.push({ ticket: t, clave: k });
+    else primeros.set(k, t);
+  }
+  if (secundarios.length) {
+    log(`  ${secundarios.length} duplicado(s) dentro del lote: se vincularan al hermano`);
+    pend = [...primeros.values()];
+  }
+
+  if (dryRun) {
+    for (const t of pend.slice(0, 5)) {
+      const lead = ticketToLead(t, target);
+      log(`  [dry-run] ticket ${t.ticket_number || t.id} -> ${JSON.stringify(lead)}`);
+    }
+    if (pend.length > 5) log(`  [dry-run] ...y ${pend.length - 5} mas`);
+    return 0;
+  }
+
+  if (!pend.length) { log('  nada por crear tras el control de duplicados'); return 0; }
+
+  const pairs = await createLeads(pend, target);
+  const byId = new Map(pend.map((t) => [t.id, t]));
+  await addNotes(pairs, byId);
+
+  if (secundarios.length) {
+    const leadPorClave = new Map();
+    for (const p of pairs) {
+      if (!p.leadId) continue;
+      const t = byId.get(p.sourceId);
+      if (t) leadPorClave.set(claveTicket(t), p.leadId);
+    }
+    const herencia = secundarios
+      .map((s) => ({ sourceId: s.ticket.id, leadId: leadPorClave.get(s.clave) }))
+      .filter((x) => x.leadId);
+    if (herencia.length) await markKommoSynced(herencia);
+    STATS.detalle.zoho_b2b_vinculados = (STATS.detalle.zoho_b2b_vinculados || 0) + herencia.length;
+    log(`  ${herencia.length} duplicado(s) del lote vinculados al lead de su hermano`);
+  }
+
+  const ok = await markKommoSynced(pairs);
+  const fail = pairs.length - ok;
+  const fusionados = pairs.filter((p) => p.merged).length;
+
+  const st = await getKommoB2BState();
+  await updateSyncState({
+    kommo_b2b_last_run: new Date().toISOString(),
+    kommo_b2b_last_pushed: ok,
+    kommo_b2b_total: (st.kommo_b2b_total || 0) + ok,
+    kommo_b2b_last_error: fail ? `${fail} ticket(s) sin lead` : null,
+  });
+  STATS.detalle.leads_zoho_b2b_creados = ok;
+  log(`KOMMO B2B listo: ${ok} lead(s) creados${fusionados ? ` (${fusionados} con contacto fusionado)` : ''}` +
+      `${fail ? `, ${fail} con error` : ''}`);
+  return ok;
+}
+
+/** Fija el corte B2B: a partir de que momento se envian tickets con asesor a VENTAS B2B. */
+async function kommoInitB2B(arg) {
+  const iso = (!arg || arg === 'now') ? new Date().toISOString() : new Date(arg).toISOString();
+  if (Number.isNaN(Date.parse(iso))) throw new Error(`Fecha de corte invalida: ${arg}`);
+  const acc = await getAccount();
+  const target = await resolveTargetB2B();
+  await updateSyncState({ kommo_b2b_since: iso });
+  log(`KOMMO B2B conectado a "${acc.subdomain}" (cuenta ${acc.id}, ${acc.currency})`);
+  log(`  destino: embudo "${target.pipelineName}" / etapa "${target.statusName}" / etiqueta "${kommoConfig.TAG}"`);
+  log(`  corte fijado en ${iso} — solo se enviaran tickets creados desde ese instante`);
+}
+
 // -------- META: hoja de Google -> Supabase -> Kommo --------
 //
 // Dos pasos independientes:
@@ -403,7 +518,10 @@ try {
     await incrementalSync();
     // Los tickets nuevos pasan a Kommo en la misma corrida. Si la integracion
     // no esta configurada (sin credenciales o sin corte), no hace nada.
-    if (kommoEnabled()) await pushToKommo({ limit: parseInt(flagVal('--limit', '200'), 10) });
+    if (kommoEnabled()) {
+      await pushToKommo({ limit: parseInt(flagVal('--limit', '200'), 10) });
+      await pushToKommoB2B({ limit: parseInt(flagVal('--limit', '200'), 10) });
+    }
     // Y la hoja de Meta se replica y empuja en la misma pasada. Se aisla en
     // try/catch: que la hoja falle no debe tumbar el sync de Zoho.
     if (!hasFlag('--sin-meta')) {
@@ -421,6 +539,13 @@ try {
     });
   }
   else if (mode === 'kommo-init') { await kommoInit(flags[0]); }
+  else if (mode === 'kommo-b2b') {
+    await pushToKommoB2B({
+      dryRun: hasFlag('--dry-run'),
+      limit: parseInt(flagVal('--limit', '200'), 10),
+    });
+  }
+  else if (mode === 'kommo-b2b-init') { await kommoInitB2B(flags[0]); }
   else if (mode === 'meta') {
     await syncMeta({
       dryRun: hasFlag('--dry-run'),

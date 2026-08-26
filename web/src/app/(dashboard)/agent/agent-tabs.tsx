@@ -16,9 +16,7 @@ import { BusinessHoursPanel, type BusinessHours } from "./business-hours-panel";
 import { CommentsPanel, type CommentsConfig } from "./comments-panel";
 
 type Tab =
-  | "identidad"
-  | "filtros"
-  | "acciones"
+  | "agente"
   | "kommo"
   | "herramientas"
   | "seguimiento"
@@ -102,14 +100,8 @@ export function AgentTabs({
     <div className="space-y-6">
       {/* Segmented control tabs */}
       <div className="flex flex-wrap gap-1 rounded-lg bg-neutral-100 p-1">
-        <TabBtn active={tab === "identidad"} onClick={() => setTab("identidad")}>
-          Identidad
-        </TabBtn>
-        <TabBtn active={tab === "filtros"} onClick={() => setTab("filtros")}>
-          Comportamiento
-        </TabBtn>
-        <TabBtn active={tab === "acciones"} onClick={() => setTab("acciones")}>
-          Acciones
+        <TabBtn active={tab === "agente"} onClick={() => setTab("agente")}>
+          Agente
         </TabBtn>
         <TabBtn active={tab === "kommo"} onClick={() => setTab("kommo")}>
           Kommo
@@ -126,15 +118,22 @@ export function AgentTabs({
       </div>
 
       {/* Todas las pestañas se mantienen montadas (CSS hidden) para no perder
-          ediciones de forms al cambiar de pestaña — mismo patrón para las 7. */}
-      <div className={tab === "identidad" ? "" : "hidden"}>{children}</div>
+          ediciones de forms al cambiar de pestaña. */}
       <div className={tab === "kommo" ? "" : "hidden"}>{kommoSlot}</div>
       <div className={tab === "herramientas" ? "" : "hidden"}>{toolsSlot}</div>
       <div className={tab === "seguimiento" ? "" : "hidden"}>{seguimientoSlot}</div>
       <div className={tab === "ajustes" ? "" : "hidden"}>{ajustesSlot}</div>
 
-      {tab === "filtros" && (
-        <div className="space-y-6">
+      {/* Agente: fusiona Identidad + Comportamiento + Acciones en una sola
+          pestaña (antes separadas). Se mantiene montada con CSS hidden igual
+          que el resto, para no perder ediciones de forms al cambiar de tab. */}
+      <div className={(tab === "agente" ? "" : "hidden") + " space-y-8"}>
+        <div>{children}</div>
+
+        <div className="space-y-3">
+          <p className="text-xs font-medium uppercase tracking-wide text-neutral-400">
+            Comportamiento
+          </p>
           <BusinessHoursPanel initial={businessHours} />
           <FiltersPanel
             freshness={freshness}
@@ -148,16 +147,17 @@ export function AgentTabs({
             hasOpenaiKey={hasOpenaiKey}
           />
         </div>
-      )}
 
-      {tab === "acciones" && (
-        <div className="space-y-6">
+        <div className="space-y-3">
+          <p className="text-xs font-medium uppercase tracking-wide text-neutral-400">
+            Acciones
+          </p>
           <CrmActionsPanel initial={crm} />
           <ShopifyActionsPanel initial={shopify} connected={shopifyConnected} />
           <BcvPanel initialEnabled={bcvEnabled} hasCustomSource={bcvHasCustomSource} />
           <CommentsPanel initial={comments} />
         </div>
-      )}
+      </div>
     </div>
   );
 }

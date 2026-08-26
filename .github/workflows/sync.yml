@@ -2,9 +2,15 @@ name: Sync Zoho -> Supabase
 
 # Auto-actualizacion del pipeline: trae los tickets nuevos/modificados de Zoho
 # Desk hacia Supabase. El dashboard (Supabase Realtime) se refresca solo.
+#
+# El cron automatico se movio a Supabase (pg_cron + pg_net, ver migracion
+# 0060_zoho_kommo_cron.sql): jobs "zoho-sync-incremental" y
+# "zoho-kommo-push-safety", cada 5 min, corriendo la MISMA logica (zoho-sync +
+# zoho-kommo-push como Edge Functions) sin depender de que este repo tenga un
+# runner disponible. Se desactivo el schedule de acá para no correr la
+# automatizacion dos veces en paralelo — el workflow_dispatch queda como
+# respaldo manual (ej. un full-sync puntual).
 on:
-  schedule:
-    - cron: '*/5 * * * *'      # cada 5 minutos (hora UTC)
   workflow_dispatch:
     inputs:
       mode:

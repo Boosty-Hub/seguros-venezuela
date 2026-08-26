@@ -94,7 +94,7 @@ export function ShopifyConnect({
           <p className="text-xs text-neutral-500">
             Conecta la tienda para que el agente pueda buscar productos, ver pedidos y crear links
             de pago. Después activas cada capacidad en{" "}
-            <a href="/agent?tab=acciones" className="font-medium text-neutral-700 underline">
+            <a href="/agent?tab=agente" className="font-medium text-neutral-700 underline">
               Agente → Acciones
             </a>
             .

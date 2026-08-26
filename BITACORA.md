@@ -19,108 +19,99 @@ retomar el trabajo.
   Netlify, sitio `segurosvenezuela`, deploy automático desde `main`; también
   corre local con `pnpm dev` en `web/`)
 - **Dashboard del pipeline Zoho:** vive dentro del dashboard del agente, en
-  `/pipeline` (GitHub Pages del repo se dio de baja el 2026-08-15)
+  `/pipeline`
 
 ---
 
-## Estado actual (al 2026-08-19)
+## Estado actual (al 2026-08-26)
 
-**Pipeline Zoho → Kommo:** funcionando, automatizado por GitHub Actions
-(`sync.yml`, `node sync.mjs incremental`, ~cada hora real aunque el cron dice
-`*/5`). Para cifras vivas: `select * from public.estado_general` en Supabase
-SQL Editor (no copiar números acá, quedan viejos).
+**Agente de IA "Asesora Sofi" (Kommo, WhatsApp/Instagram): ✅ EN VIVO,
+publicando de verdad.** `publishing_enabled=true`, `bypass_review=true`.
+Para apagarlo o pausar mensajes: ver `/agent` → pestaña Agente → interruptor
+"Agente activo" (para todo el pipeline: clasificar + responder + publicar) o
+"Publicar en Kommo" (solo deja de enviar, sigue generando drafts en `/inbox`).
 
-**Agente de IA "Asesora Sofi" (Kommo, WhatsApp/Instagram):** ✅ **activo end
-to end**, verificado con mensajes reales el 2026-08-19:
-- Managed Agent + 2 Memory Stores creados en Anthropic (`agent_013cULz...`,
-  `sv-master`, `sv-leads`) — el bloqueo de crédito de la sesión anterior se
-  resolvió, ya hay saldo.
-- Clasificador (Haiku 4.5, con contexto de conversación previa vía
-  `fetchLeadHistory`) → agente de respuesta (Haiku 4.5, sesión CMA con
-  `search_kb`) probados de punta a punta con mensajes sintéticos: clasifica
-  bien, responde en tuteo venezolano, usa la KB.
-- **Sigue en modo sombra**: `publishing_enabled=false` — nada se envía a un
-  cliente real todavía, los drafts quedan en `/inbox` para revisar. Falta
-  decidir el criterio de salida de este modo.
-- **Sin revisión humana bloqueando nada** (a propósito, para poder chequear
-  cómo responde el agente a TODO mientras está en sombra): `bypass_review=true`
-  y las 11 verticales con `requires_review=false`/`auto_reply=true`. Se
-  descubrió y arregló una invariante rota: `bypass_review` ya NO depende de
-  `publishing_enabled` (antes solo tenía efecto si publicación estaba
-  encendida) — son dos interruptores independientes: bypass decide si la
-  revisión bloquea la GENERACIÓN, publishing decide si sale de verdad a
-  Kommo. Ver `/api/agent/publish`.
-- **Emoji seguros para Kommo/WhatsApp**: los simples de un símbolo (👋 👍 ❤️)
-  pasan bien; las secuencias compuestas (ZWJ, tono de piel, banderas) se
-  rompen. Dos capas: regla en el prompt + saneador de código en
-  `generate-response` (`sanitizeEmojiForKommo`) que las limpia siempre, pase
-  lo que pase el modelo.
-- **Tope de consumo diario/mensual** (`/consumo`, panel "Tope de consumo"):
-  configurable en USD (`runtime_config.USAGE_DAILY_CAP_USD` /
-  `USAGE_MONTHLY_CAP_USD`, vacío = sin tope). `alerts-scan` (cada 5 min) lo
-  revisa; si se supera, apaga `kommo_publish_config.agent_enabled=false` — el
-  agente para POR COMPLETO (ni clasifica, ver trampa #10) — y crea una alerta
-  crítica. No se reactiva solo: un humano debe prenderlo de nuevo. Probado en
-  vivo con un tope artificial de $0.01.
-- **Torre de control**: campana 🔔 en el header (sidebar desktop, header
-  mobile, embed) que abre un panel deslizable desde la derecha
-  (`control-tower.tsx` + `/api/control-tower`) con alertas activas, estado
-  del agente, consumo vs. tope y revisiones pendientes, todo con botones para
-  actuar sin salir del panel (reactivar agente, marcar alertas vistas). La
-  página `/alerts` sigue existiendo para el historial completo.
-- **KB ahora es por vertical** (antes era global): cada documento subido
-  tiene `vertical_id` obligatorio (`kb_documents.vertical_id NOT NULL`);
-  `search_kb` solo trae resultados de la vertical activa. Se sube desde
-  `/verticales`, entrando a cada vertical. Sin documentos reales cargados
-  todavía (pendiente).
-- **Módulo "Contenido" (voz + KB general) eliminado.** La voz/identidad vive
-  entera en el system prompt (`/agent`, pestaña Identidad); ya no existe el
-  concepto de "documento de KB sin vertical" (el agente siempre responde
-  dentro de una vertical).
-- **Dashboard unificado**: Agente + Kommo + Herramientas + Seguimiento +
-  Ajustes son ahora pestañas de una sola página (`/agent`, "Configuración").
-  Usuarios sigue aparte. Auditado sin duplicación de funciones entre pestañas
-  (cada campo se edita en un solo lugar).
-- **Dreams** (aprendizajes automáticos): cron dinámico — el intervalo real
-  del cron (`dreams-run`) cambia con el dropdown de `/dreams` (daily/3d/7d/
-  15d), ya no hay due-check interno. Un cron aparte, mensual
-  (`dreams-consolidate-monthly`), relee todos los dreams activos y los
-  consolida en un digest único (`runtime_config.DREAMS_DIGEST`, acotado a 900
-  palabras) — eso es lo que el agente realmente lee, no los archivos sueltos.
-  Modelo de Dreams: Haiku (antes Sonnet).
-- **System prompt real vs editable**: lo editable en `/agent` es solo la voz
-  del operador; Anthropic tiene ADEMÁS una maquinaria fija (formato de
-  respuesta, prioridades, seguridad) que se ve de solo lectura en el mismo
-  `/agent` ("Ver el system prompt completo"), leída en vivo de Anthropic. Esa
-  maquinaria vive en un único archivo (`web/src/lib/agent-prompt-core.mjs`),
-  compartido entre el dashboard y `scripts/provision-agent.mjs` (antes había
-  una copia duplicada en el script; ya no).
+- **System prompt: NO editable desde el dashboard.** Solo se ve de solo
+  lectura en `/agent`. Cualquier cambio de prompt se hace en una sesión como
+  esta (edita `runtime_config.SYSTEM_PROMPT` o `agent-prompt-core.mjs` según
+  corresponda y sincroniza con Anthropic).
+- **Emoji: prohibido TODO emoji, sin excepción.** Comprobado en vivo que
+  Kommo trunca/corrompe el campo completo con cualquier emoji, incluso uno
+  simple de un solo símbolo (no solo los compuestos, como se creía antes).
+  Dos capas: regla en el prompt + `sanitizeEmojiForKommo` en
+  `generate-response` (limpia todo el rango Unicode de emoji pase lo que pase
+  el modelo).
+- **Instagram y WhatsApp SÍ son canales seguros** para que el cliente
+  comparta cédula/teléfono/correo/póliza — regla explícita en el prompt tras
+  un caso real donde el agente dijo lo contrario.
+- **Acciones de CRM (mover_etapa, enviar_imagen, actualizar_lead/contacto):
+  se ejecutan YA contra Kommo real**, sin importar si "Publicar en Kommo"
+  está apagado — ese interruptor solo gobierna el envío de MENSAJES, no las
+  acciones de CRM.
+- **Envío de imágenes de trámites** (`enviar_imagen`, tool automática, sin
+  esperar instrucción del operador): patchea `image_field_id` + corre
+  `image_salesbot_id` en Kommo. Config en `kommo_publish_config`.
+- **Trazabilidad completa en `/inbox`**: la conversación del sistema muestra,
+  en una sola línea de tiempo, mensajes + cambios de etapa (movidos por el
+  agente O hechos a mano en Kommo, vía `lead_stage_events`) + imágenes
+  enviadas por el agente (`drafts.agent_metadata.images_sent`). Un cambio de
+  etapa sin mensaje nuevo (drag-and-drop humano en Kommo) llega por
+  `leads.status`/`leads.update` del webhook y se registra sin tocar
+  `last_message_at` (no reordena el inbox).
+- **Torre de control**: campana 🔔 en el header abre un panel que **desplaza**
+  el contenido (no flota encima) con alertas activas, Dreams pendientes de
+  revisar, estado del agente, consumo vs. tope y revisiones pendientes,
+  con botones para actuar y links a "dónde pasó". **El módulo `/alerts`
+  standalone fue eliminado**: la Torre de Control es la única vista de
+  alertas (histórico incluido).
+- **Verticales**: 14 activas (las 11 originales + Empleo, Proveedores,
+  Intermediarios-apertura-de-código). Cada una tiene su propio prompt
+  (`system_prompt`) y ahora SÍ se inyecta al agente (bug corregido: antes se
+  guardaba pero nunca se leía en `buildContext`). Intermediarios-apertura-de-
+  código: al pedir apertura de código, el agente mueve el lead a la etapa
+  "Apertura de códigos" del pipeline Configuraciones (notifica a Operaciones
+  Comerciales por el cambio de etapa, no por mensaje aparte).
+- **KB por vertical**: subida de documentos arreglada (el bug era 100%
+  cliente — el botón "Guardar" quedaba deshabilitado en silencio si faltaba
+  el título; ahora se deshabilita visiblemente y el error es prominente).
+- **Dreams**: fuerza español explícito (system + reglas de extracción; antes
+  solo dependía de "igualar el registro de voz" y salían en inglés).
+  Frecuencia de análisis configurable desde `/dreams` (daily/3d/7d/15d)
+  funciona con cron dinámico. El digest consolidado (`DREAMS_DIGEST`) es
+  **rolling**: borrar un dream fuente NO limpia lo ya consolidado en el
+  digest — una corrección dura requiere editar el digest directamente.
+- **`/inbox`**: cards de header compactas; pestañas "Agente"/"Resto"; filtro
+  y badge "Transferido a humano" (se marca cuando el agente mueve el lead a
+  una etapa pausada — `leads.transferred_to_human_at/_stage`).
+- **`/analitica`** (nuevo): funnel completo — leads entrando a Kommo,
+  atendidos por el agente, transferidos a humano, conversión a "Ganado",
+  desglose por vertical, temas más preguntados, canales. Fuente:
+  `analytics_overview(p_since)` (función SQL).
+- **Pipeline Zoho → Kommo: automatizado 100% con `pg_cron` de Supabase**
+  (ya NO por GitHub Actions — el cron de `.github/workflows/sync.yml` quedó
+  solo con `workflow_dispatch`, sin schedule). Dos jobs:
+  `zoho-sync-incremental` (Zoho Desk → Supabase, luego push a Kommo) y
+  `zoho-kommo-push-safety` (red de seguridad independiente). Filtro de
+  Asesor B2C corregido (faltaba el valor "Seguros Venezuela" como "sin
+  asesor" — 181 leads quedaban sin migrar). Flujo inverso B2B: leads
+  restantes (corredores reales) migran a `Ventas B2B` → etapa "DATA ZOHO
+  DESK".
+- **Bug de FK ambigua (`drafts`↔`messages`) corregido**: `publish-to-kommo`,
+  `evaluate-outcomes` y `alerts-scan` tiraban 500 en cron por tener dos FKs
+  entre esas tablas; se resolvió con el hint explícito
+  `messages!drafts_message_id_fkey(...)`.
 
 ## PENDIENTE
 
-**Pipeline Zoho/Kommo:**
-1. Borrar a mano en la interfaz de Kommo los 172 leads etiquetados
-   `duplicado` (la API no permite `DELETE /leads`, ver trampa #2).
-2. Restringir la hoja de Google de Meta Ads (hoy `anyone: commenter`, expone
+1. Cargar documentos reales de KB en cada vertical (tarifarios, condiciones,
+   FAQs) — hoy la mayoría sigue sin ninguno.
+2. Borrar a mano en Kommo los leads etiquetados `duplicado` (la API no
+   permite `DELETE /leads`, ver trampa #2).
+3. Restringir la hoja de Google de Meta Ads (hoy `anyone: commenter`, expone
    PII) — pedir a `alessandra.publithink@gmail.com` compartirla con cuenta de
    servicio y apuntar `META_SHEET_CSV_URL`.
-3. Decidir si el contacto del lead debe ser el asesor (hoy) o el asegurado
-   (`titular`).
-4. Decidir qué hacer con los 205 leads `revisar-asesor` (filtrar por etiqueta
-   en Kommo, borrar o destaggear a mano).
-5. Leer todas las pestañas de la hoja de Drive (hoy solo la primera).
-
-**Agente de IA:**
-6. Cargar documentos reales de KB en cada vertical (tarifarios, condiciones,
-   FAQs de las aseguradoras) — hoy no hay ninguno.
-7. Probar el pipeline completo con mensajes reales de clientes en `/inbox`
-   antes de decidir salir de modo sombra.
-8. Decidir criterio de salida de modo sombra y activar `publishing_enabled`.
-9. La próxima vez que se edite el prompt en `/agent` y se guarde, el system
-   prompt en Anthropic se resincroniza solo (recoge la limpieza del scaffold
-   de esta sesión) — no requiere acción aparte.
-10. Definir topes de consumo reales en `/consumo` (hoy sin tope puesto —
-    quedó probado y limpiado tras la prueba en vivo).
+4. Decidir qué hacer con los leads `revisar-asesor` (etiqueta en Kommo).
+5. Definir topes de consumo reales en `/consumo` (hoy sin tope puesto).
 
 ### Vencimientos
 
@@ -134,10 +125,11 @@ to end**, verificado con mensajes reales el 2026-08-19:
 ```sql
 select * from public.estado_general;      -- foto completa: totales, cortes, fallos 24h
 select * from public.bitacora_reciente;   -- una fila por corrida del sync
+select * from public.analytics_overview(now() - interval '30 days'); -- funnel del agente
 ```
 
-`sync_log` graba **cada ejecución** (local o GitHub Actions); no depende de
-los logs de Actions (caducan a los 90 días).
+`sync_log` graba **cada ejecución**; no depende de logs de GitHub Actions
+(caducan a los 90 días, y ya casi no se usa Actions para esto).
 
 Otras vistas: `kommo_sync_status` (Zoho→Kommo), `meta_sync_status`
 (Drive→Kommo), `kommo_duplicados` (debe estar vacía).
@@ -146,35 +138,27 @@ Otras vistas: `kommo_sync_status` (Zoho→Kommo), `meta_sync_status`
 
 ## Cómo funciona la automatización del pipeline
 
-Un único workflow, `.github/workflows/sync.yml`, ejecuta `node sync.mjs
-incremental`, tres etapas en cadena:
+**Zoho → Kommo corre por `pg_cron` de Supabase** (jobs `zoho-sync-
+incremental` y `zoho-kommo-push-safety`, ver Estado actual). GitHub Actions
+(`sync.yml`) queda solo para correr manual (`workflow_dispatch`).
 
 ```
-GitHub Actions        1. Zoho Desk   ──▶  Supabase (tickets)
-cada ~1 hora   ──────▶2. Supabase    ──▶  Kommo   [ZohoDesk]
+pg_cron (Supabase)   1. Zoho Desk   ──▶  Supabase (tickets)
+                      2. Supabase    ──▶  Kommo   [B2C: Ventas | B2B: DATA ZOHO DESK]
                       3. Hoja Drive  ──▶  Supabase (meta_leads) ──▶ Kommo [MetaAds]
 ```
 
-Etapa 3 en `try/catch`: si la hoja falla, sigue el sync de Zoho
-(`sync_state.meta_last_error`).
-
-**Zoho es incremental** (watermark = `max(created_time)`, pagina hasta topar
-con lo guardado; detalle por ticket nuevo porque el listado no trae
-`customFields`; refresca 200 tickets abiertos por corrida). **Drive se relee
-completo** cada vez (así una corrección en la hoja se propaga).
+**Zoho es incremental** (watermark = `max(created_time)`). **Drive se relee
+completo** cada vez.
 
 **Anti-duplicados:** `kommo_lead_id is not null` = ya enviado. Más:
-`tickets_ya_en_kommo()` (equivalente ya tiene lead), dedupe dentro del lote,
-`meta_leads_solapados()` (misma persona por Zoho). Clave: `asunto + contacto +
-titular` (`ticket_dedup_key()`).
+`tickets_ya_en_kommo()`, dedupe dentro del lote, `meta_leads_solapados()`.
+Clave: `asunto + contacto + titular` (`ticket_dedup_key()`).
 
-**Filtro de Asesor** (desde 2026-08-15): solo migran a Kommo tickets con
-`Asesor` = "No tengo"/"Sin Asesor"/"Sin Asesor (KG)" (`ilike`, tolerante a
-mayúsculas/espacios). Asesor con nombre real o campo vacío no entra.
-
-**Cadencia real:** el cron dice `*/5 * * * *` pero GitHub ejecuta cada
-**45–70 min** (throttling de GitHub). Forzar a mano: Actions → *Sync Zoho →
-Supabase* → *Run workflow* (`incremental`/`full`/`enrich`/`kommo`/`meta`).
+**Filtro de Asesor B2C:** migran a `Ventas B2C` solo tickets con `Asesor` =
+"No tengo"/"Sin Asesor"/"Sin Asesor (KG)"/"Seguros Venezuela" (`ilike`,
+tolerante). **Filtro B2B (inverso):** el resto (asesor con nombre real, es
+decir corredores) migra a `Ventas B2B` → etapa "DATA ZOHO DESK".
 
 ---
 
@@ -185,23 +169,28 @@ cd sync                       # requiere sync/.env (no versionado)
 
 node --env-file=.env sync.mjs incremental        # el ciclo completo
 node --env-file=.env sync.mjs kommo --dry-run    # ver payloads, no escribe
+node --env-file=.env sync.mjs kommo-b2b --dry-run
 node --env-file=.env sync.mjs meta --dry-run
 node --env-file=.env sync.mjs kommo-init 2026-08-01T00:00:00Z   # mover el corte
+node --env-file=.env sync.mjs kommo-b2b-init 2026-08-01T00:00:00Z
 node --env-file=.env sync.mjs meta-init  2026-08-01T00:00:00Z
 
 node --env-file=.env limpiar-kommo.mjs --dry-run  # etiquetar dups, arreglar tels
 ```
 
-Migraciones en `db/` (pipeline) aplican en orden y son idempotentes:
-`schema.sql`, `kommo.sql`, `meta_leads.sql`, `dedup.sql`, `bitacora.sql`.
+Migraciones en `db/` (pipeline) aplican en orden y son idempotentes.
+Migraciones del agente de IA en `supabase/migrations/`, aplicadas directo
+contra Supabase vía Management API (no CLI local todavía; `SUPABASE_ACCESS_
+TOKEN`/`SUPABASE_PROJECT_REF` en `.env.local`). Tras cualquier cambio de
+migración/función, regenerar el bundle del wizard de aprovisionamiento:
+`node web/scripts/embed-provision.mjs`.
 
-Migraciones del agente de IA en `supabase/migrations/` (0001…0056), aplicadas
-directo contra Supabase vía Management API (no CLI local todavía). Deploy de
-Edge Functions: `node --env-file=.env.local scripts/deploy-agent-functions.mjs
-[slug]`. Aprovisionar/actualizar el Managed Agent de Anthropic: `node
+Deploy de Edge Functions: `npx supabase functions deploy <slug> --project-ref
+"$SUPABASE_PROJECT_REF" --no-verify-jwt` (o varios slugs separados por
+espacio). Aprovisionar/actualizar el Managed Agent de Anthropic: `node
 --env-file=.env.local --env-file=sync/.env scripts/provision-agent.mjs`
-(idempotente, no duplica lo ya creado, no reconfigura un agente existente —
-eso se hace desde `/agent` en el dashboard).
+(idempotente; no reconfigura un agente existente — eso se hace desde
+`/agent`).
 
 ---
 
@@ -209,74 +198,66 @@ eso se hace desde `/agent` en el dashboard).
 
 **Pipeline Zoho/Kommo:**
 1. **Zoho no devuelve `modifiedTime` en el listado** de `/tickets` → el
-   watermark es `createdTime`, no `modifiedTime` (`sortBy=-modifiedTime` no
-   ordena de forma útil).
+   watermark es `createdTime`.
 2. **La API de Kommo no borra leads** (`Allow: GET,POST,PATCH`). Limpiar =
    etiquetar y borrar desde la interfaz.
-3. **`filter[tags][0][name]` de Kommo no filtra fiable** (devolvió 1231 leads
-   cuando solo 782 tenían la etiqueta) — filtrar por `filter[id][]=` o llevar
-   el inventario en Supabase.
+3. **`filter[tags][0][name]` de Kommo no filtra fiable** — filtrar por
+   `filter[id][]=` o llevar el inventario en Supabase.
 4. **Cédulas placeholder** (`C.I: V-00000000`) repetidas entre personas
-   distintas → la clave de dedupe incluye `titular`, no solo asunto+contacto.
-5. **Teléfonos en formatos mezclados** (Zoho `04241333536`, hoja
-   `p:+584241398741`/`p:0414-6222161`/`p:1`) → todo pasa por
-   `lib/telefono.mjs`; lo que no encaja en un patrón venezolano se deja crudo
-   a propósito.
-6. **El `id` de Meta (`l:...`) es la mejor clave de idempotencia** — 0
-   repetidos, vs. 28% de duplicados en Zoho.
+   distintas → la clave de dedupe incluye `titular`.
+5. **Teléfonos en formatos mezclados** → todo pasa por `lib/telefono.mjs`;
+   lo que no encaja en un patrón venezolano se deja crudo a propósito.
+6. **El `id` de Meta (`l:...`) es la mejor clave de idempotencia.**
 
 **Agente de IA:**
 7. `process-inbound` **NO lee el body del POST**: procesa `inbound_queue`
-   (encolado por `kommo-webhook`), no el payload de la request. Para simular
-   un mensaje de prueba hay que insertar en `inbound_queue` y luego invocar
-   `process-inbound` para que drene.
-8. Migraciones con `net.http_post(url := '${SUPABASE_URL}/...')`: el
-   placeholder queda literal en el `.sql` (se sustituye en runtime al
-   aprovisionar un cliente nuevo desde el wizard). Al aplicar una migración
-   así a **este** proyecto a mano, sustituir `${SUPABASE_URL}` por la URL real
-   antes de mandar el SQL — si no, el cron llama a una URL que no existe.
+   (encolado por `kommo-webhook`). Para simular un mensaje hay que insertar
+   en `inbound_queue` y luego invocar `process-inbound`.
+8. Migraciones con `net.http_post(url := '${SUPABASE_URL}/...')`: sustituir
+   `${SUPABASE_URL}` por la URL real al aplicar a mano contra este proyecto.
 9. `pg_cron` no tiene "cada N días desde una fecha ancla": se aproxima con
-   `*/N` en el campo día-del-mes (se resetea en el borde de mes). El hueco
-   real desde la última corrida (`DREAMS_LAST_RUN`) compensa para no perder
-   días.
-10. El kill switch `agent_enabled` (usado por el tope de consumo) solo lo
-    chequeaba `generate-response` — `process-inbound` seguía clasificando
-    (gastando Haiku) aunque el agente estuviera "apagado". Ahora
-    `process-inbound` también lo chequea (mismo campo, `kommo_publish_config
-    .agent_enabled`) y no clasifica nada si está en false.
+   `*/N` en día-del-mes; `DREAMS_LAST_RUN` compensa el hueco real.
+10. El kill switch `agent_enabled` debe chequearse en **ambas**
+    `process-inbound` (clasificación) y `generate-response` (respuesta) — si
+    solo se chequea en una, la otra sigue gastando con el agente "apagado".
+11. **Cualquier emoji rompe un campo de texto de Kommo** (PATCH), no solo los
+    compuestos — probado en vivo (un 👋 truncó el mensaje). No confiar en
+    "los simples son seguros".
+12. **`EdgeRuntime.waitUntil()` para encadenar Edge Functions no es
+    confiable** (probado: la función encadenada nunca se disparó en cron
+    real). Preferir crons independientes de `pg_cron`, cada uno con su propia
+    red de seguridad.
+13. **Los `dreams` consolidados en `DREAMS_DIGEST` son rolling**: borrar los
+    archivos fuente NO borra lo ya consolidado en el digest. Una corrección
+    dura (ej: un aprendizaje incorrecto) requiere editar el digest
+    directamente, no solo borrar dreams.
 
 ---
 
 ## Cronología (resumen)
 
-- **2026-08-07** — Pipeline inicial: `db/schema.sql`, sync Zoho→Supabase,
-  dashboard con embudo/kanban/KPIs, GitHub Actions + Pages.
-- **2026-08-10** — Login del dashboard, Kommo conectado, sync de Zoho
-  arreglado (trampa #1), hoja de Drive integrada, limpieza de duplicados y
-  teléfonos, bitácora (`sync_log`) creada.
-- **2026-08-15** — Filtro de Asesor en la migración Zoho→Kommo. Se integró la
-  maquinaria del template `Template-Agent-kommo` (agente de IA "Sofi"):
-  migraciones + Edge Functions + cron desplegados, 11 verticales sembradas,
-  system prompt inicial, limpieza de voseo→tuteo en todo el template.
-  Bloqueado por falta de crédito de Anthropic. Dashboard del agente publicado
-  en Netlify; módulo `/pipeline` agregado ahí mismo.
-- **2026-08-19** — Crédito de Anthropic resuelto: Managed Agent + Memory
-  Stores creados, pipeline completo (clasificar → responder) verificado con
-  mensajes reales, en modo sombra. KB pasó de global a por-vertical
-  (`kb_documents.vertical_id NOT NULL`). Dreams: cron dinámico por
-  frecuencia + consolidación mensual separada, modelo Haiku. Eliminados:
-  módulo "voz" y concepto de "documento de KB sin vertical" (identidad ya
-  vive en el system prompt; KB siempre por vertical). Deduplicado
-  `CORE_SCAFFOLD`/`composeSystem` (antes vivía copiado en dos archivos, ahora
-  uno solo: `agent-prompt-core.mjs`). Unificados en un solo módulo de
-  Configuración (`/agent`, 7 pestañas) los 5 módulos que antes eran rutas
-  separadas: Agente, Kommo, Herramientas, Seguimiento, Ajustes — auditado sin
-  duplicación de funciones entre ellos. Usuarios queda aparte. Después, en la
-  misma fecha: publicación a Kommo confirmada apagada; revisión humana
-  desactivada del todo (`bypass_review=true` + verticales sin
-  `requires_review`), arreglando de paso la invariante que ataba bypass a
-  publishing; saneador de emoji para Kommo/WhatsApp (dos capas: prompt +
-  código); tope de consumo diario/mensual configurable en `/consumo` que
-  apaga el agente completo (clasificación incluida) al superarse; Torre de
-  Control (campana en el header, panel deslizable con alertas/estado/consumo/
-  revisiones pendientes).
+- **2026-08-07 → 2026-08-19**: pipeline inicial (sync Zoho→Supabase→Kommo,
+  dashboard, GitHub Actions), luego agente de IA "Sofi" integrado (Managed
+  Agent + Memory Stores, clasificador + respuesta con CMA), verificado con
+  mensajes reales en modo sombra (`publishing_enabled=false`). Configuración
+  unificada en un solo módulo (`/agent`). KB pasó a ser por vertical.
+- **2026-08-19 → 2026-08-26**: **agente activado en vivo** end-to-end.
+  Conexión a Kommo (dominio corregido), envío de imágenes de trámites,
+  system prompt hecho de solo-lectura en el dashboard (edición solo por
+  sesión), horario laboral y frescura de mensajes verificados, multimedia
+  (foto/PDF/audio Whisper) validada, bug de KB-upload corregido, bug de
+  prompts de vertical no inyectados corregido, 3 verticales nuevas (Empleo,
+  Proveedores, Intermediarios-apertura-de-código), Dreams forzado a español
+  y frecuencia configurable verificada, Torre de Control rediseñada como
+  panel que desplaza (no flota) con pestaña de Dreams pendientes, módulo
+  `/alerts` standalone eliminado (todo vive en la Torre de Control), `/inbox`
+  con pestañas Agente/Resto y tag "Transferido a humano", módulo `/analitica`
+  nuevo (funnel completo), filtro de Asesor B2C corregido y corrido en real,
+  flujo B2B inverso (`DATA ZOHO DESK`) agregado, pipeline Zoho↔Kommo
+  automatizado con `pg_cron` de Supabase (GitHub Actions dado de baja como
+  cron), bug de FK ambigua `drafts`/`messages` corregido, saneador de emoji
+  endurecido a TODO emoji (bug de truncado confirmado en vivo), regla
+  agregada de que Instagram/WhatsApp sí son canales seguros para datos
+  personales (tras un caso real corregido), y trazabilidad completa del
+  timeline de `/inbox` (cambios de etapa hechos a mano en Kommo + imágenes
+  enviadas por el agente ahora visibles en la conversación).

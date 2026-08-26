@@ -60,7 +60,7 @@ async function getDraftsToEvaluate(draftId?: string): Promise<DraftWithContext[]
     const { data, error } = await supabase
       .from("drafts")
       .select(
-        "id, body, edited_body, sent_at, message_id, messages(content, source, lead_id, classification, verticals(slug))"
+        "id, body, edited_body, sent_at, message_id, messages!drafts_message_id_fkey(content, source, lead_id, classification, verticals(slug))"
       )
       .eq("id", draftId)
       .single();
@@ -72,7 +72,7 @@ async function getDraftsToEvaluate(draftId?: string): Promise<DraftWithContext[]
   const { data, error } = await supabase
     .from("drafts")
     .select(
-      "id, body, edited_body, sent_at, message_id, messages(content, source, lead_id, classification, verticals(slug))"
+      "id, body, edited_body, sent_at, message_id, messages!drafts_message_id_fkey(content, source, lead_id, classification, verticals(slug))"
     )
     .in("status", ["auto_sent", "sent"])
     .gte("sent_at", cutoff)

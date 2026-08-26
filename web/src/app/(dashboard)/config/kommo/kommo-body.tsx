@@ -80,11 +80,11 @@ export async function KommoBody({ kommoSaved }: { kommoSaved: boolean }) {
           <p className="rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-500">
             El encendido del agente, el modo de publicación y la revisión humana se
             configuran en{" "}
-            <a href="/agent?tab=identidad" className="font-medium text-brand underline">
+            <a href="/agent?tab=agente" className="font-medium text-brand underline">
               Identidad → Encendido y publicación
             </a>
             . Los límites por lead y filtros, en{" "}
-            <a href="/agent?tab=filtros" className="font-medium text-brand underline">
+            <a href="/agent?tab=agente" className="font-medium text-brand underline">
               Comportamiento
             </a>
             .
@@ -102,7 +102,7 @@ export async function KommoBody({ kommoSaved }: { kommoSaved: boolean }) {
         <div className="divide-y divide-neutral-100">
           {[
             {
-              href: "/agent?tab=filtros",
+              href: "/agent?tab=agente",
               title: "Embudos y etapas donde NO responde",
               desc: "Etapas de Kommo en las que el agente no contesta.",
             },
@@ -112,12 +112,12 @@ export async function KommoBody({ kommoSaved }: { kommoSaved: boolean }) {
               desc: "Etapas donde SÍ corre el seguimiento y qué vendedores lo reciben.",
             },
             {
-              href: "/agent?tab=acciones",
+              href: "/agent?tab=agente",
               title: "Acciones en el CRM",
               desc: "Permitir que el agente mueva de etapa y complete campos en Kommo.",
             },
             {
-              href: "/agent?tab=acciones",
+              href: "/agent?tab=agente",
               title: "Comentarios de Instagram",
               desc: "Respuesta pública en comentarios (salesbot y campo propios).",
             },

@@ -67,9 +67,17 @@ export async function getAccount() {
   return { id: a.id, subdomain: a.subdomain, currency: a.currency };
 }
 
-/** Resuelve {pipelineId, statusId} por nombre, con override por env. */
-export async function resolveTarget() {
-  if (process.env.KOMMO_PIPELINE_ID && process.env.KOMMO_STATUS_ID) {
+/**
+ * Resuelve {pipelineId, statusId} por nombre, con override por env.
+ * Sin argumentos: destino B2C (env KOMMO_PIPELINE_NAME/STATUS_NAME, default
+ * "VENTAS"/"cliente por atender" — y el override total KOMMO_PIPELINE_ID/
+ * KOMMO_STATUS_ID sigue aplicando SOLO en este caso). Con {pipelineName,
+ * statusName} explicitos (ej. destino B2B) se resuelve siempre por nombre,
+ * ignorando el override de env — cada destino tiene su propio par fijo.
+ */
+export async function resolveTarget({ pipelineName, statusName } = {}) {
+  const usingDefault = !pipelineName && !statusName;
+  if (usingDefault && process.env.KOMMO_PIPELINE_ID && process.env.KOMMO_STATUS_ID) {
     return {
       pipelineId: Number(process.env.KOMMO_PIPELINE_ID),
       statusId: Number(process.env.KOMMO_STATUS_ID),
@@ -77,21 +85,24 @@ export async function resolveTarget() {
       statusName: '(por env)',
     };
   }
+  const wantPipeline = pipelineName || PIPELINE_NAME;
+  const wantStatus = statusName || STATUS_NAME;
+
   const d = await api('/leads/pipelines');
   const pipelines = d?._embedded?.pipelines || [];
   const norm = (s) => String(s || '').trim().toLowerCase();
 
   const pipeline =
-    pipelines.find((p) => norm(p.name) === norm(PIPELINE_NAME)) ||
-    pipelines.find((p) => norm(p.name).includes(norm(PIPELINE_NAME))) ||
-    pipelines.find((p) => p.is_main);
-  if (!pipeline) throw new Error(`No se encontro el embudo "${PIPELINE_NAME}" en Kommo`);
+    pipelines.find((p) => norm(p.name) === norm(wantPipeline)) ||
+    pipelines.find((p) => norm(p.name).includes(norm(wantPipeline))) ||
+    (usingDefault ? pipelines.find((p) => p.is_main) : null);
+  if (!pipeline) throw new Error(`No se encontro el embudo "${wantPipeline}" en Kommo`);
 
   const statuses = pipeline._embedded?.statuses || [];
-  const status = statuses.find((s) => norm(s.name) === norm(STATUS_NAME));
+  const status = statuses.find((s) => norm(s.name) === norm(wantStatus));
   if (!status) {
     const nombres = statuses.map((s) => s.name).join(' | ');
-    throw new Error(`No se encontro la etapa "${STATUS_NAME}" en el embudo "${pipeline.name}". Etapas: ${nombres}`);
+    throw new Error(`No se encontro la etapa "${wantStatus}" en el embudo "${pipeline.name}". Etapas: ${nombres}`);
   }
   return {
     pipelineId: pipeline.id,
@@ -100,6 +111,14 @@ export async function resolveTarget() {
     statusName: status.name,
   };
 }
+
+// Destino B2B: corredores/intermediarios que cotizan via Sofi u otras
+// plataformas (cualquier ticket cuyo Asesor NO sea uno de los 4 valores de
+// "sin asesor real" — ver FILTRO_SIN_ASESOR en lib/supa.mjs).
+const PIPELINE_NAME_B2B = process.env.KOMMO_PIPELINE_NAME_B2B || 'VENTAS B2B';
+const STATUS_NAME_B2B = process.env.KOMMO_STATUS_NAME_B2B || 'DATA ZOHO DESK';
+export const resolveTargetB2B = () =>
+  resolveTarget({ pipelineName: PIPELINE_NAME_B2B, statusName: STATUS_NAME_B2B });
 
 /* ---------------------------------------------------------------------------
  * Mapeo ticket de Zoho -> lead de Kommo
@@ -388,4 +407,7 @@ export async function fixContactPhones(contacts, { dryRun = false } = {}) {
   return { revisados: contacts.length, corregidos: done, propuestos: arreglos, sin_arreglo: sinArreglo };
 }
 
-export const kommoConfig = { PIPELINE_NAME, STATUS_NAME, TAG, SUBDOMAIN };
+export const kommoConfig = {
+  PIPELINE_NAME, STATUS_NAME, TAG, SUBDOMAIN,
+  PIPELINE_NAME_B2B, STATUS_NAME_B2B,
+};

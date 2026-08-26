@@ -3,17 +3,15 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { NAV_GROUPS } from "./nav";
-import { ControlTower } from "./control-tower";
+import { ControlTowerButton } from "./control-tower";
 
 const ENV_AGENT_LABEL = process.env.NEXT_PUBLIC_AGENT_LABEL || "Agente";
 
 export function EmbedTabsNav({
   label,
-  alertsCount,
   isAdmin = true,
 }: {
   label?: string;
-  alertsCount: number;
   isAdmin?: boolean;
 }) {
   const pathname = usePathname();
@@ -30,7 +28,7 @@ export function EmbedTabsNav({
         <span className="flex-1 text-sm font-semibold tracking-tight text-neutral-900">
           {agentLabel}
         </span>
-        <ControlTower />
+        <ControlTowerButton />
       </div>
 
       {/* Tabs — los mismos módulos del sidebar, ahora horizontales */}
@@ -59,11 +57,6 @@ export function EmbedTabsNav({
                     className={active ? "text-brand" : "text-neutral-400"}
                   />
                   {item.label}
-                  {item.href === "/alerts" && alertsCount > 0 && (
-                    <span className="ml-0.5 inline-flex items-center rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-medium text-white">
-                      {alertsCount}
-                    </span>
-                  )}
                   {active && (
                     <span className="absolute bottom-0 inset-x-2 h-0.5 rounded-full bg-brand" />
                   )}

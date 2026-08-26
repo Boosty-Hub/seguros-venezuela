@@ -59,7 +59,7 @@ type KommoMessage = {
 };
 type KommoPayload = {
   account?: { id?: string; subdomain?: string };
-  leads?: { add?: KommoLead[]; update?: KommoLead[] };
+  leads?: { add?: KommoLead[]; update?: KommoLead[]; status?: KommoLead[] };
   message?: { add?: KommoMessage[] };
 };
 
@@ -642,6 +642,49 @@ async function transcribeAudio(
   return text || null;
 }
 
+// ---- Cambio de etapa SIN mensaje (drag-and-drop humano en Kommo, leads.status
+// / leads.update) ----
+// Deliberadamente NO reusa upsertLead(): esa función toca last_message_at
+// (reordenaría el inbox y rompería la ventana de frescura por un movimiento
+// de etapa que no es un mensaje nuevo). Es la MISMA lógica de detección de
+// upsertLead (líneas ~404-429), extraída para poder llamarla sin ese efecto
+// secundario. Fail-open: un lead que no conocemos todavía se ignora (llegará
+// completo cuando tenga su primer mensaje real).
+async function recordKommoStageChangeOnly(kommoLeadId: number, newStageId: number): Promise<void> {
+  const { data: existing } = await supabase
+    .from("leads")
+    .select("id, kommo_stage_id")
+    .eq("kommo_lead_id", kommoLeadId)
+    .maybeSingle();
+  if (!existing) return; // lead desconocido — nada que sincronizar todavía
+
+  const prevStageId = (existing as { kommo_stage_id?: number | null }).kommo_stage_id;
+  if (prevStageId == null || Number(prevStageId) === Number(newStageId)) {
+    // null→id (lead sin etapa registrada aún) igual se persiste, sin evento
+    // (mismo criterio que upsertLead: no es un "movimiento", es el primer valor).
+    if (prevStageId == null) {
+      await supabase.from("leads").update({ kommo_stage_id: newStageId }).eq("id", existing.id);
+    }
+    return;
+  }
+
+  await supabase.from("leads").update({ kommo_stage_id: newStageId }).eq("id", existing.id);
+  try {
+    await supabase.from("lead_stage_events").insert({
+      lead_id: existing.id,
+      from_stage_id: Number(prevStageId),
+      to_stage_id: Number(newStageId),
+      from_stage_name: null, // sin nombres — el UI los resuelve vía mapa de stages
+      to_stage_name: null,
+      pipeline_name: null,
+      moved_by: "kommo",
+      draft_id: null,
+    });
+  } catch (evErr) {
+    console.warn("lead_stage_events insert (kommo, sin mensaje) — fail-open:", evErr instanceof Error ? evErr.message : String(evErr));
+  }
+}
+
 // ---- Procesa un payload completo ----
 async function processPayload(payload: KommoPayload, anthropic: Anthropic, operator: string) {
   const subdomain = payload.account?.subdomain ?? null;
@@ -659,6 +702,17 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
   // Key de OpenAI para transcribir notas de voz (Whisper). Sin key, los
   // audios se ignoran con razón explícita aunque el toggle esté prendido.
   const openaiKey = runtimeCfg.get("OPENAI_API_KEY");
+
+  // 0) Cambios de etapa SIN mensaje (leads.status / leads.update — drag-and-drop
+  // humano en Kommo). Barato: sin clasificador, sin API de Kommo. Se procesa
+  // ANTES de leads.add para no pisar con un valor viejo si el mismo payload
+  // también trae un mensaje nuevo más abajo.
+  for (const l of [...(payload.leads?.status ?? []), ...(payload.leads?.update ?? [])]) {
+    const id = Number(l.id);
+    const stageId = l.status_id ? Number(l.status_id) : NaN;
+    if (!Number.isFinite(id) || !Number.isFinite(stageId)) continue;
+    await recordKommoStageChangeOnly(id, stageId);
+  }
 
   // 1) Upsert leads de leads.add
   if (payload.leads?.add) {

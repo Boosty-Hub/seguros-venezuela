@@ -126,6 +126,7 @@ export default function InboxFilters({
         <option value="answered">Respondidos</option>
         <option value="review">Pendientes de review</option>
         <option value="toxic">Tóxicos</option>
+        <option value="transferido">Transferido a humano</option>
       </select>
 
       <select

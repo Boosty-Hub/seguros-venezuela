@@ -102,7 +102,7 @@ async function detectFailedDrafts(): Promise<AlertInput[]> {
   const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
   const { data } = await supabase
     .from("drafts")
-    .select("id, body, agent_metadata, created_at, messages(lead_id, leads(display_name, kommo_lead_id))")
+    .select("id, body, agent_metadata, created_at, messages!drafts_message_id_fkey(lead_id, leads(display_name, kommo_lead_id))")
     .eq("status", "failed")
     .gte("created_at", since);
   const rows = (data ?? []) as Array<{

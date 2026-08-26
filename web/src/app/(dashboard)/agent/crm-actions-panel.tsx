@@ -8,6 +8,7 @@ export type CrmFlags = {
   moveStage: boolean;
   updateLead: boolean;
   updateContact: boolean;
+  sendImage: boolean;
 };
 
 const FIELD: Record<keyof CrmFlags, string> = {
@@ -15,6 +16,7 @@ const FIELD: Record<keyof CrmFlags, string> = {
   moveStage: "crm_can_move_stage",
   updateLead: "crm_can_update_lead",
   updateContact: "crm_can_update_contact",
+  sendImage: "crm_can_send_image",
 };
 
 export function CrmActionsPanel({ initial }: { initial: CrmFlags }) {
@@ -49,7 +51,7 @@ export function CrmActionsPanel({ initial }: { initial: CrmFlags }) {
     // Apagar el master apaga todo (espejo de la lógica del backend).
     const next: CrmFlags = v
       ? { ...flags, enabled: true }
-      : { enabled: false, moveStage: false, updateLead: false, updateContact: false };
+      : { enabled: false, moveStage: false, updateLead: false, updateContact: false, sendImage: false };
     const patch: Record<string, boolean> = v
       ? { crm_actions_enabled: true }
       : {
@@ -57,6 +59,7 @@ export function CrmActionsPanel({ initial }: { initial: CrmFlags }) {
           crm_can_move_stage: false,
           crm_can_update_lead: false,
           crm_can_update_contact: false,
+          crm_can_send_image: false,
         };
     persist(patch, next);
   }
@@ -121,6 +124,14 @@ export function CrmActionsPanel({ initial }: { initial: CrmFlags }) {
           checked={flags.updateContact}
           disabled={capsDisabled}
           onChange={(v) => toggleCap("updateContact", v)}
+        />
+        <CapabilityCard
+          icon="🖼️"
+          title="Enviar imagen de pasos"
+          description="A diferencia de las anteriores, esta SÍ actúa sola: envía la imagen del paso a paso correcta en cuanto el cliente pregunta por un trámite (registro en línea, reporte de pagos, CIMECI, carta aval/reembolso, etc.), sin necesitar instrucción en la voz. Requiere el campo y el salesbot de imágenes ya configurados."
+          checked={flags.sendImage}
+          disabled={capsDisabled}
+          onChange={(v) => toggleCap("sendImage", v)}
         />
       </div>
 
