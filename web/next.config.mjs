@@ -1,5 +1,13 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  experimental: {
+    // pdf-parse (pdfjs-dist adentro) se rompe cuando webpack lo bundlea:
+    // en dev tira "Object.defineProperty called on non-object" con archivos
+    // reales (comprobado con un PDF de 18MB), mientras que el MISMO archivo
+    // con `node` puro se parsea sin problema. Externalizarlo hace que se
+    // cargue vía require() desde node_modules, igual que en Node puro.
+    serverComponentsExternalPackages: ["pdf-parse"],
+  },
   async headers() {
     // Secure default: solo permite iframe desde el mismo origen.
     // El middleware sobreescribe este header a frame-ancestors * cuando
