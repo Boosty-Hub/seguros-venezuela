@@ -311,6 +311,27 @@ async function isAgentOffForLead(
   }
 }
 
+// ---- Etapa REAL de un lead en Kommo (lectura en vivo, para autocorregir
+// staleness cuando se perdió el webhook de cambio de etapa) ----
+async function fetchLiveLeadStageId(
+  kommoLeadId: number,
+  domain: string,
+  token: string
+): Promise<number | null> {
+  try {
+    const res = await fetch(`https://${domain}/api/v4/leads/${kommoLeadId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return null; // fail-open: si no se puede leer, se usa lo que ya había en DB
+    // deno-lint-ignore no-explicit-any
+    const lead = (await res.json()) as any;
+    const statusId = lead?.status_id;
+    return statusId != null && Number.isFinite(Number(statusId)) ? Number(statusId) : null;
+  } catch {
+    return null;
+  }
+}
+
 // ---- Mapea origin de Kommo a un canal "legible" ----
 function originToChannel(origin?: string): string {
   if (!origin) return "unknown";
@@ -910,14 +931,30 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
       // Etapa ignorada: si el lead está en una etapa apagada, NO clasificamos
       // (cero tokens). El gate de generate-response queda igual como red de
       // seguridad por si el lead cambia de etapa entre el inbound y la respuesta.
+      //
+      // AUTOCORRECCIÓN: la etapa guardada en `leads.kommo_stage_id` puede
+      // quedar desactualizada si se perdió el webhook `leads.status`/
+      // `leads.update` correspondiente (pasó en producción: un lead volvió a
+      // la etapa activa en Kommo pero acá seguía marcado en la etapa pausada
+      // anterior, y su mensaje se ignoró por error). Antes de ignorar por
+      // etapa, se refresca leyendo la etapa REAL desde la API de Kommo — solo
+      // cuando la guardada matchea una etapa pausada, para no gastar una
+      // llamada extra en el caso normal (etapa activa).
       if (filters.stages.size > 0) {
         const { data: ld } = await supabase
           .from("leads")
           .select("kommo_stage_id")
           .eq("id", leadId)
           .maybeSingle();
-        const st = ld?.kommo_stage_id;
-        if (st != null && filters.stages.has(Number(st))) {
+        let st = ld?.kommo_stage_id != null ? Number(ld.kommo_stage_id) : null;
+        if (st != null && filters.stages.has(st) && kommoDomain && kommoToken) {
+          const live = await fetchLiveLeadStageId(leadKommoId, kommoDomain, kommoToken);
+          if (live != null && live !== st) {
+            await supabase.from("leads").update({ kommo_stage_id: live }).eq("id", leadId);
+            st = live;
+          }
+        }
+        if (st != null && filters.stages.has(st)) {
           await supabase
             .from("messages")
             .update({ ignored: true, ignored_reason: `stage:${st}` })
