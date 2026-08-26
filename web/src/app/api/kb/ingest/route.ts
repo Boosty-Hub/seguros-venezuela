@@ -8,6 +8,21 @@ export const maxDuration = 60;
 const ACCEPTED = new Set(["pdf", "docx", "txt", "md", "srt", "vtt"]);
 
 export async function POST(request: Request) {
+  // Handler completo envuelto: sin esto, una excepción durante el parseo de
+  // PDF/DOCX (probado: pasa en producción con archivos reales, aunque pdf-parse
+  // funciona bien local) se escapaba como un 500 sin cuerpo JSON — el frontend
+  // hacía `res.json()` sobre eso, explotaba en silencio, y el usuario veía
+  // "no pasó nada" sin ningún error ni el documento en la lista.
+  try {
+    return await handleIngest(request);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("kb/ingest: unhandled error:", err);
+    return NextResponse.json({ error: `error inesperado: ${msg}` }, { status: 500 });
+  }
+}
+
+async function handleIngest(request: Request): Promise<Response> {
   const supabase = createSupabaseServerClient();
   const {
     data: { user },
@@ -39,7 +54,13 @@ export async function POST(request: Request) {
       );
     }
     const buf = await file.arrayBuffer();
-    const parsed = await parseDocument(buf, filename);
+    let parsed: Awaited<ReturnType<typeof parseDocument>>;
+    try {
+      parsed = await parseDocument(buf, filename);
+    } catch (parseErr) {
+      const msg = parseErr instanceof Error ? parseErr.message : String(parseErr);
+      return NextResponse.json({ error: `no se pudo leer el archivo .${ext}: ${msg}` }, { status: 422 });
+    }
     text = parsed.text;
     format = parsed.format;
   } else if (inlineContent?.trim()) {

@@ -44,19 +44,27 @@ export function VerticalKbPanel({ verticalId, docs }: { verticalId: string; docs
     if (file) form.set("file", file);
     if (content.trim()) form.set("content", content);
 
-    const res = await fetch("/api/kb/ingest", { method: "POST", body: form });
-    const json = await res.json();
-    setBusy(false);
-    if (!res.ok) {
-      setError(json.error ?? "error");
-      return;
+    try {
+      const res = await fetch("/api/kb/ingest", { method: "POST", body: form });
+      // Una respuesta no-JSON (timeout de la plataforma, error 5xx sin cuerpo,
+      // etc.) no debe dejar el botón en "Procesando…" para siempre ni fallar
+      // en silencio — se muestra como error explícito.
+      const json = await res.json().catch(() => ({ error: `respuesta inválida del servidor (${res.status})` }));
+      setBusy(false);
+      if (!res.ok) {
+        setError(json.error ?? "error");
+        return;
+      }
+      setTitle("");
+      setContent("");
+      setFile(null);
+      const f = document.getElementById(`kb-file-${verticalId}`) as HTMLInputElement | null;
+      if (f) f.value = "";
+      router.refresh();
+    } catch (err) {
+      setBusy(false);
+      setError(err instanceof Error ? err.message : "error de red al subir el documento");
     }
-    setTitle("");
-    setContent("");
-    setFile(null);
-    const f = document.getElementById(`kb-file-${verticalId}`) as HTMLInputElement | null;
-    if (f) f.value = "";
-    router.refresh();
   }
 
   async function handleDelete(id: string) {
