@@ -112,6 +112,18 @@ function stripVtt(raw: string): string {
     .trim();
 }
 
+// Tokens por palabra, para traducir el presupuesto en tokens a palabras.
+//
+// Era 1.3 (razonable para prosa) pero subestima MUCHO en el contenido real de
+// esta KB: tablas de tarifas y directorios de clínicas están llenos de siglas,
+// nombres propios en mayúsculas, montos y teléfonos, que el tokenizador parte
+// en muchos pedazos. Comprobado en producción: con 1.3, cuatro chunks de una
+// tabla de proveedores quedaron tan largos que superaron la ventana de 512
+// tokens de gte-small y el modelo solo embebió su prefijo común — resultado:
+// embeddings IDÉNTICOS entre chunks distintos (indistinguibles en la búsqueda)
+// y la cola del texto invisible para el buscador. 1.8 deja margen real.
+const TOKENS_PER_WORD = 1.8;
+
 // Chunker simple para KB: por palabras, con overlap
 export function chunkText(
   text: string,
@@ -119,20 +131,35 @@ export function chunkText(
 ): string[] {
   const maxTokens = opts.maxTokens ?? 400;
   const overlapTokens = opts.overlapTokens ?? 60;
-  // 1 palabra ≈ 1.3 tokens
-  const wordsPerChunk = Math.floor(maxTokens / 1.3);
-  const overlapWords = Math.floor(overlapTokens / 1.3);
+  const wordsPerChunk = Math.floor(maxTokens / TOKENS_PER_WORD);
+  const overlapWords = Math.floor(overlapTokens / TOKENS_PER_WORD);
+  // Presupuesto para el texto NUEVO de cada chunk: el overlap que se arrastra
+  // del anterior también ocupa lugar, así que se descuenta. Así el total
+  // (overlap + texto nuevo) nunca pasa de wordsPerChunk.
+  const segmentCap = Math.max(1, wordsPerChunk - overlapWords);
 
   // Primero partir por párrafos. Si un párrafo es demasiado grande, partir por oraciones.
   const paragraphs = text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
   const sentences: string[] = [];
   for (const p of paragraphs) {
-    if (countWords(p) <= wordsPerChunk) {
+    if (countWords(p) <= segmentCap) {
       sentences.push(p);
-    } else {
-      // Split por oraciones aproximadas
-      const parts = p.split(/(?<=[.!?])\s+/);
-      sentences.push(...parts);
+      continue;
+    }
+    // Split por oraciones aproximadas
+    for (const part of p.split(/(?<=[.!?])\s+/)) {
+      if (countWords(part) <= segmentCap) {
+        sentences.push(part);
+        continue;
+      }
+      // Corte DURO por palabras: una tabla o lista sin puntuación es UNA sola
+      // "oración" gigante que antes pasaba entera al chunk (el bucle de abajo
+      // solo vacía el buffer, no parte el segmento) — de ahí salían chunks de
+      // 600+ palabras. Sin esto, el tope de tamaño no se respeta nunca.
+      const words = part.split(/\s+/).filter(Boolean);
+      for (let i = 0; i < words.length; i += segmentCap) {
+        sentences.push(words.slice(i, i + segmentCap).join(" "));
+      }
     }
   }
 
@@ -140,20 +167,23 @@ export function chunkText(
   let buffer: string[] = [];
   let bufferWords = 0;
 
+  const flush = () => {
+    const text = buffer.join(" ");
+    chunks.push(text);
+    // Overlap por PALABRAS, no por segmentos completos: antes arrastraba la
+    // última entrada entera, así que si esa entrada ya era del tamaño del tope,
+    // el chunk siguiente arrancaba lleno y terminaba con el DOBLE del tope
+    // (comprobado: chunks de 410 palabras con tope 250). Cortar por palabras
+    // acota el arrastre a overlapWords y hace que el tope se respete siempre.
+    const words = text.split(/\s+/).filter(Boolean);
+    const tail = words.slice(Math.max(0, words.length - overlapWords));
+    buffer = tail.length > 0 ? [tail.join(" ")] : [];
+    bufferWords = tail.length;
+  };
+
   for (const s of sentences) {
     const w = countWords(s);
-    if (bufferWords + w > wordsPerChunk && buffer.length > 0) {
-      chunks.push(buffer.join(" "));
-      // overlap
-      const overlap: string[] = [];
-      let used = 0;
-      for (let i = buffer.length - 1; i >= 0 && used < overlapWords; i--) {
-        overlap.unshift(buffer[i]);
-        used += countWords(buffer[i]);
-      }
-      buffer = overlap;
-      bufferWords = used;
-    }
+    if (bufferWords + w > wordsPerChunk && buffer.length > 0) flush();
     buffer.push(s);
     bufferWords += w;
   }
