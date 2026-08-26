@@ -390,7 +390,10 @@ export default async function InboxPage({
 
       {/* Topbar sticky manual (Inbox es split-full-height — NO usa PageShell) */}
       <div className="sticky top-0 z-20 border-b border-neutral-200/80 bg-white/80 backdrop-blur-md">
-        <div className="flex items-center justify-between gap-4 px-4 py-2.5 sm:px-6">
+        {/* pr extra: deja espacio al widget de soporte fijo arriba a la
+            derecha (id="header", ver boosty-support.tsx) para que no tape la
+            card de "Transferidos". */}
+        <div className="flex items-center justify-between gap-4 px-4 py-2.5 pr-32 sm:px-6 sm:pr-36">
           <h1 className="text-[15px] font-semibold tracking-tight text-neutral-900">Inbox</h1>
           {/* Stat cards compactas, en la misma fila que el título */}
           <div className="flex flex-wrap items-center gap-1.5">

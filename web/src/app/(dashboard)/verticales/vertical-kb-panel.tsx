@@ -34,8 +34,7 @@ export function VerticalKbPanel({ verticalId, docs }: { verticalId: string; docs
   const missingTitle = !title.trim();
   const missingSource = !file && !content.trim();
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  async function handleSubmit() {
     setError(null);
     if (missingTitle) return setError("Falta el título — escríbelo antes de indexar.");
     if (missingSource) return setError("Falta el archivo o el contenido — sube un archivo o pega texto antes de indexar.");
@@ -102,12 +101,24 @@ export function VerticalKbPanel({ verticalId, docs }: { verticalId: string; docs
         clasificada en esta vertical. Acepta PDF, DOCX, TXT, MD, SRT, VTT — hasta 50MB.
       </p>
 
-      <form onSubmit={handleSubmit} className="space-y-3 rounded-lg border border-neutral-200 bg-neutral-50 p-4">
+      {/*
+        DIV, no <form>: este panel vive dentro del <form> de VerticalForm (guardar
+        nombre/prompt de la vertical) — un <form> anidado es HTML inválido y el
+        navegador lo "arregla" reasignando el submit al form de AFUERA, lo que
+        guardaba la vertical Y CERRABA EL MODAL en vez de indexar el documento
+        (confirmado: warning de React "form cannot be a descendant of form").
+      */}
+      <div className="space-y-3 rounded-lg border border-neutral-200 bg-neutral-50 p-4">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <input
             type="text"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
+            onKeyDown={(e) => {
+              // Enter en un <input> de texto dispara el submit del form
+              // ancestro más cercano — acá ese es el de VerticalForm.
+              if (e.key === "Enter") e.preventDefault();
+            }}
             placeholder='Título — ej: "Tarifario Salud Individual 2026"'
             className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm focus:border-neutral-900 focus:ring-1 focus:ring-neutral-900 focus:outline-none"
           />
@@ -158,7 +169,8 @@ export function VerticalKbPanel({ verticalId, docs }: { verticalId: string; docs
           </p>
         )}
         <button
-          type="submit"
+          type="button"
+          onClick={handleSubmit}
           disabled={busy || missingTitle || missingSource}
           title={
             missingTitle
@@ -171,7 +183,7 @@ export function VerticalKbPanel({ verticalId, docs }: { verticalId: string; docs
         >
           {busy ? "Procesando…" : "Indexar en esta vertical"}
         </button>
-      </form>
+      </div>
 
       {docs.length > 0 ? (
         <div className="overflow-hidden rounded-lg border border-neutral-200">
