@@ -1,6 +1,7 @@
 // Parsers para documentos de KB: PDF, DOCX, TXT, MD, SRT, VTT.
 
 import mammoth from "mammoth";
+import { PDF_WORKER_DATA_URL } from "./pdf-worker-data-url";
 
 export type ParsedDocument = {
   text: string;
@@ -62,6 +63,14 @@ export async function parseDocument(
   if (lower.endsWith(".pdf")) {
     ensureDomMatrixPolyfill();
     const { PDFParse } = await import("pdf-parse");
+    // pdfjs-dist calcula el path de su worker en runtime relativo al chunk
+    // bundleado (no es un import estático) — el file tracing de Next.js no lo
+    // detecta solo, así que el .mjs quedaba fuera del bundle serverless de
+    // Netlify y esto fallaba con "Cannot find module .../pdf.worker.mjs" en
+    // TODO PDF (confirmado en vivo). Usamos el worker embebido como data: URL
+    // (pdf-worker-data-url.ts) — self-contained, sin depender de ningún
+    // archivo externo que un bundler pueda dejar afuera.
+    PDFParse.setWorker(PDF_WORKER_DATA_URL);
     const parser = new PDFParse({ data: Buffer.from(buffer) });
     const result = await parser.getText();
     return { text: result.text, format: "pdf" };
