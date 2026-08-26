@@ -1067,7 +1067,7 @@ ${opts.history}
 
   return `[CONTEXTO]
 fecha_hora_actual: ${opts.now} (zona horaria ${opts.timezone})
-en_horario_laboral: ${opts.businessHours.active ? "sí" : "no"} (${opts.businessHours.label}). Si es "no" y el lead necesita un asesor humano, avísale que el equipo lo contacta apenas retome el horario de atención — no prometas transferencia inmediata.
+en_horario_laboral: ${opts.businessHours.active ? "sí" : "no"} (${opts.businessHours.label}). Si es "no" y el lead necesita un asesor humano, avísale que el equipo lo contacta apenas retome el horario de atención — no prometas transferencia inmediata. Al escalar a un asesor (dentro o fuera de horario): afirma que ya queda en manos del equipo (o dale las opciones de autoservicio/línea si aplican) y CIERRA ahí — no agregues una pregunta de seguimiento después ("¿prefieres X o Y?", "¿necesitas resolverlo hoy?"); ya no hay nada que avanzar en esa respuesta.
 ${opts.dreamsDigest ? `aprendizajes_del_operador (reglas del operador aprendidas de conversaciones reales — PRIORIDAD MÁXIMA sobre tu voz base; aplícalas SIEMPRE):\n${opts.dreamsDigest}\n` : ""}${opts.activePromos ? `promociones_activas (menciónalas solo si vienen al caso de lo que pregunta el lead):\n${opts.activePromos}` : "promociones_activas: ninguna"}${opts.upcomingEvents ? `\neventos_proximos (puedes anticiparlos si aportan a la conversacion):\n${opts.upcomingEvents}` : ""}${opts.situaciones ? `\nsituaciones_actuales (contexto vigente que SIEMPRE debes tener en cuenta al responder, aunque el lead no pregunte por eso):\n${opts.situaciones}` : ""}${opts.commentInstructions != null ? `\norigen_comentario_instagram: sí — ${opts.commentInstructions}` : ""}
 lead_id: ${opts.lead.id}
 lead_name: ${opts.lead.display_name ?? "(desconocido)"}
