@@ -52,7 +52,15 @@ export function VerticalKbPanel({ verticalId, docs }: { verticalId: string; docs
         // límite de payload de las funciones de Netlify (~6MB). Acá solo se
         // manda la ruta resultante, no el binario.
         const supabase = createSupabaseBrowserClient();
-        const path = `${verticalId}/${crypto.randomUUID()}-${file.name}`;
+        // Supabase Storage rechaza keys con tildes/espacios/paréntesis
+        // ("Invalid key" 400, confirmado en vivo con un nombre real de
+        // archivo). Se sanea SOLO la key del objeto — el nombre original va
+        // aparte en `filename` para mostrar y detectar la extensión.
+        const safeName = file.name
+          .normalize("NFD")
+          .replace(/[̀-ͯ]/g, "")
+          .replace(/[^a-zA-Z0-9.\-_]/g, "_");
+        const path = `${verticalId}/${crypto.randomUUID()}-${safeName}`;
         const { error: upErr } = await supabase.storage.from("kb-uploads").upload(path, file);
         if (upErr) throw new Error(`no se pudo subir el archivo: ${upErr.message}`);
         body = { title, vertical_id: verticalId, storage_path: path, filename: file.name };
