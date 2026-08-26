@@ -7,6 +7,52 @@ export type ParsedDocument = {
   format: "pdf" | "docx" | "txt" | "md" | "srt" | "vtt";
 };
 
+// pdf-parse (pdfjs-dist por debajo) espera `DOMMatrix` global para las
+// transformaciones de texto — existe en navegadores pero NO en el runtime
+// Node/Lambda de Netlify (confirmado en producción: "DOMMatrix is not
+// defined", 100% de los PDFs fallaban). Local funcionaba porque Next.js
+// bundlea distinto en dev; en Netlify Functions el global no existe. Polyfill
+// afín (2D, suficiente para extracción de texto — no se necesita 3D/CSS).
+function ensureDomMatrixPolyfill(): void {
+  const g = globalThis as unknown as { DOMMatrix?: unknown };
+  if (g.DOMMatrix) return;
+  class DOMMatrixPolyfill {
+    a = 1; b = 0; c = 0; d = 1; e = 0; f = 0;
+    constructor(init?: number[]) {
+      if (Array.isArray(init) && init.length >= 6) {
+        [this.a, this.b, this.c, this.d, this.e, this.f] = init;
+      }
+    }
+    multiply(other: DOMMatrixPolyfill): DOMMatrixPolyfill {
+      return new DOMMatrixPolyfill([
+        this.a * other.a + this.c * other.b,
+        this.b * other.a + this.d * other.b,
+        this.a * other.c + this.c * other.d,
+        this.b * other.c + this.d * other.d,
+        this.a * other.e + this.c * other.f + this.e,
+        this.b * other.e + this.d * other.f + this.f,
+      ]);
+    }
+    translate(tx: number, ty: number): DOMMatrixPolyfill {
+      return this.multiply(new DOMMatrixPolyfill([1, 0, 0, 1, tx, ty]));
+    }
+    scale(sx: number, sy: number = sx): DOMMatrixPolyfill {
+      return this.multiply(new DOMMatrixPolyfill([sx, 0, 0, sy, 0, 0]));
+    }
+    invertSelf(): DOMMatrixPolyfill {
+      const det = this.a * this.d - this.b * this.c;
+      const a = this.d / det, b = -this.b / det, c = -this.c / det, d = this.a / det;
+      const e = -(a * this.e + c * this.f), f = -(b * this.e + d * this.f);
+      this.a = a; this.b = b; this.c = c; this.d = d; this.e = e; this.f = f;
+      return this;
+    }
+    transformPoint(point: { x: number; y: number }): { x: number; y: number } {
+      return { x: this.a * point.x + this.c * point.y + this.e, y: this.b * point.x + this.d * point.y + this.f };
+    }
+  }
+  g.DOMMatrix = DOMMatrixPolyfill;
+}
+
 export async function parseDocument(
   buffer: ArrayBuffer,
   filename: string
@@ -14,6 +60,7 @@ export async function parseDocument(
   const lower = filename.toLowerCase();
 
   if (lower.endsWith(".pdf")) {
+    ensureDomMatrixPolyfill();
     const { PDFParse } = await import("pdf-parse");
     const parser = new PDFParse({ data: Buffer.from(buffer) });
     const result = await parser.getText();
