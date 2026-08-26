@@ -6,14 +6,15 @@ const SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
 // La Edge Function acepta hasta 8 inputs por llamada (ver supabase/functions/
 // embed) — antes se mandaba 1 a la vez con 350ms de pausa entre cada uno, lo
-// que hacía que un documento grande (cientos de chunks) tardara varios
-// minutos y venciera el timeout de la función serverless de Netlify
-// (confirmado en vivo: 504 "Inactivity Timeout" con un PDF real de ~250
-// chunks). Lotes de 8 + concurrencia limitada bajan eso a segundos.
-const BATCH_SIZE = 8;
-const CONCURRENCY = 4;
+// que hacía que un documento grande tardara varios minutos y venciera el
+// timeout del cliente. Batch 8 + concurrencia 4 se probó en vivo y tiró
+// WORKER_RESOURCE_LIMIT (la función embed no da abasto con esa carga) — estos
+// valores son el punto medio: bastante más rápido que 1-a-la-vez sin saturar
+// el modelo ONNX corriendo dentro de la Edge Function.
+const BATCH_SIZE = 3;
+const CONCURRENCY = 3;
 const MAX_RETRIES = 5;
-const INTER_BATCH_DELAY_MS = 100;
+const INTER_BATCH_DELAY_MS = 150;
 
 async function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
