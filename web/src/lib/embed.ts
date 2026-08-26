@@ -4,9 +4,16 @@
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
-const BATCH_SIZE = 1;
+// La Edge Function acepta hasta 8 inputs por llamada (ver supabase/functions/
+// embed) — antes se mandaba 1 a la vez con 350ms de pausa entre cada uno, lo
+// que hacía que un documento grande (cientos de chunks) tardara varios
+// minutos y venciera el timeout de la función serverless de Netlify
+// (confirmado en vivo: 504 "Inactivity Timeout" con un PDF real de ~250
+// chunks). Lotes de 8 + concurrencia limitada bajan eso a segundos.
+const BATCH_SIZE = 8;
+const CONCURRENCY = 4;
 const MAX_RETRIES = 5;
-const INTER_BATCH_DELAY_MS = 350;
+const INTER_BATCH_DELAY_MS = 100;
 
 async function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -51,15 +58,25 @@ async function embedBatch(batch: string[], attempt = 1): Promise<number[][]> {
 
 export async function embedTexts(texts: string[]): Promise<number[][]> {
   if (texts.length === 0) return [];
-  const out: number[][] = [];
+  const batches: string[][] = [];
   for (let i = 0; i < texts.length; i += BATCH_SIZE) {
-    const batch = texts.slice(i, i + BATCH_SIZE);
-    const embeddings = await embedBatch(batch);
-    out.push(...embeddings);
-    // Pequeño respiro para que la función no acumule presión
-    if (i + BATCH_SIZE < texts.length) await sleep(INTER_BATCH_DELAY_MS);
+    batches.push(texts.slice(i, i + BATCH_SIZE));
   }
-  return out;
+  // Resultados indexados por posición de batch — Promise.all no garantiza
+  // orden de EJECUCIÓN pero sí de resultado, así que el orden final de
+  // embeddings queda igual al de `texts` sin importar la concurrencia.
+  const results: number[][][] = new Array(batches.length);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < batches.length) {
+      const idx = cursor++;
+      results[idx] = await embedBatch(batches[idx]);
+      // Pequeño respiro para que la función no acumule presión bajo concurrencia.
+      if (cursor < batches.length) await sleep(INTER_BATCH_DELAY_MS);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, batches.length) }, worker));
+  return results.flat();
 }
 
 export async function embedOne(text: string): Promise<number[]> {
