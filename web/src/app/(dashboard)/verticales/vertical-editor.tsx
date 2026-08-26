@@ -119,6 +119,16 @@ export function VerticalRow({ vertical, docs }: { vertical: Vertical; docs: KBDo
             {vertical.ignore ? "ON" : "OFF"}
           </button>
         </td>
+        <td className="px-4 py-3">
+          <span
+            className={
+              "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium " +
+              (docs.length > 0 ? "bg-sky-50 text-sky-700" : "bg-neutral-50 text-neutral-400")
+            }
+          >
+            {docs.length} {docs.length === 1 ? "doc" : "docs"}
+          </span>
+        </td>
         <td className="px-4 py-3 text-right">
           <span className="text-xs font-medium text-neutral-500">Ver / Editar →</span>
         </td>
