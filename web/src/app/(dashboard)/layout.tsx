@@ -12,6 +12,7 @@ import { NavProgress } from "./nav-progress";
 import { SetupDrawer } from "./setup-drawer";
 import { ControlTowerProvider } from "./control-tower-context";
 import { ControlTowerPanel } from "./control-tower";
+import { BoostySupportMount, BoostySupportScript } from "./boosty-support";
 
 export default async function DashboardLayout({
   children,
@@ -29,6 +30,14 @@ export default async function DashboardLayout({
     .maybeSingle();
 
   const email = user?.email ?? "";
+  // No hay nombre de usuario propio en el modelo (solo email) — derivamos uno
+  // legible de la parte local del email para prellenar el popup de soporte.
+  const displayName = email
+    ? email
+        .split("@")[0]
+        .replace(/[._-]+/g, " ")
+        .replace(/\b\w/g, (c) => c.toUpperCase())
+    : undefined;
   const isAdmin = getRole(user) === "admin";
   // Resolve the branding label DB-first (editable from /agent) with env
   // fallback. Resolved server-side so it does NOT depend on the build-time
@@ -82,7 +91,9 @@ export default async function DashboardLayout({
         </div>
         {showSetupDrawer && <SetupDrawer state={setupState} />}
         <ControlTowerPanel />
+        <BoostySupportMount />
       </div>
+      <BoostySupportScript userName={displayName} userEmail={email || undefined} />
     </ControlTowerProvider>
   );
 }
