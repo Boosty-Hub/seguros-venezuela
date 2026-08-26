@@ -3,6 +3,9 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { ConfirmDialog } from "@/components/ui";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+
+const MAX_FILE_BYTES = 50 * 1024 * 1024; // 50MB — igual al límite del bucket kb-uploads
 
 type KBDocument = {
   id: string;
@@ -36,16 +39,33 @@ export function VerticalKbPanel({ verticalId, docs }: { verticalId: string; docs
     setError(null);
     if (missingTitle) return setError("Falta el título — escríbelo antes de indexar.");
     if (missingSource) return setError("Falta el archivo o el contenido — sube un archivo o pega texto antes de indexar.");
+    if (file && file.size > MAX_FILE_BYTES) {
+      return setError(
+        `el archivo pesa ${(file.size / (1024 * 1024)).toFixed(1)}MB — el máximo soportado es 50MB.`
+      );
+    }
 
     setBusy(true);
-    const form = new FormData();
-    form.set("title", title);
-    form.set("vertical_id", verticalId);
-    if (file) form.set("file", file);
-    if (content.trim()) form.set("content", content);
-
     try {
-      const res = await fetch("/api/kb/ingest", { method: "POST", body: form });
+      let body: Record<string, string>;
+      if (file) {
+        // El archivo va DIRECTO del navegador a Supabase Storage — evita el
+        // límite de payload de las funciones de Netlify (~6MB). Acá solo se
+        // manda la ruta resultante, no el binario.
+        const supabase = createSupabaseBrowserClient();
+        const path = `${verticalId}/${crypto.randomUUID()}-${file.name}`;
+        const { error: upErr } = await supabase.storage.from("kb-uploads").upload(path, file);
+        if (upErr) throw new Error(`no se pudo subir el archivo: ${upErr.message}`);
+        body = { title, vertical_id: verticalId, storage_path: path, filename: file.name };
+      } else {
+        body = { title, vertical_id: verticalId, content };
+      }
+
+      const res = await fetch("/api/kb/ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
       // Una respuesta no-JSON (timeout de la plataforma, error 5xx sin cuerpo,
       // etc.) no debe dejar el botón en "Procesando…" para siempre ni fallar
       // en silencio — se muestra como error explícito.
@@ -79,7 +99,7 @@ export function VerticalKbPanel({ verticalId, docs }: { verticalId: string; docs
     <div className="space-y-4">
       <p className="text-xs text-neutral-500">
         Documentos que el agente consulta (búsqueda semántica, on-demand) SOLO cuando la conversación está
-        clasificada en esta vertical. Acepta PDF, DOCX, TXT, MD, SRT, VTT.
+        clasificada en esta vertical. Acepta PDF, DOCX, TXT, MD, SRT, VTT — hasta 50MB.
       </p>
 
       <form onSubmit={handleSubmit} className="space-y-3 rounded-lg border border-neutral-200 bg-neutral-50 p-4">

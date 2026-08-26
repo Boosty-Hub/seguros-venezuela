@@ -1,23 +1,19 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createServiceClient } from "@/lib/supabase/service";
 import { parseDocument, chunkText } from "@/lib/kb-parsers";
 import { embedTexts } from "@/lib/embed";
 
 export const maxDuration = 60;
 
 const ACCEPTED = new Set(["pdf", "docx", "txt", "md", "srt", "vtt"]);
-// Netlify corta la conexión a mitad de subida en archivos grandes (probado en
-// vivo: un PDF de 18.5MB nunca llega a completarse, sin ningún error legible
-// para el usuario — la conexión simplemente se cae). Cortamos ANTES con un
-// mensaje claro en vez de dejar que el usuario vea "no pasó nada".
-const MAX_FILE_BYTES = 8 * 1024 * 1024; // 8MB
+const KB_UPLOADS_BUCKET = "kb-uploads";
 
 export async function POST(request: Request) {
   // Handler completo envuelto: sin esto, una excepción durante el parseo de
-  // PDF/DOCX (probado: pasa en producción con archivos reales, aunque pdf-parse
-  // funciona bien local) se escapaba como un 500 sin cuerpo JSON — el frontend
-  // hacía `res.json()` sobre eso, explotaba en silencio, y el usuario veía
-  // "no pasó nada" sin ningún error ni el documento en la lista.
+  // PDF/DOCX se escapaba como un 500 sin cuerpo JSON — el frontend hacía
+  // `res.json()` sobre eso, explotaba en silencio, y el usuario veía "no pasó
+  // nada" sin ningún error ni el documento en la lista.
   try {
     return await handleIngest(request);
   } catch (err) {
@@ -27,6 +23,13 @@ export async function POST(request: Request) {
   }
 }
 
+// El archivo NO viaja en este request: las funciones de Netlify cortan la
+// conexión en payloads grandes (probado en vivo: un PDF de 18.5MB nunca
+// llegaba a completarse, sin ningún error legible). El frontend lo sube antes,
+// directo desde el navegador a Supabase Storage (bucket privado `kb-uploads`,
+// hasta 50MB — 0061_kb_uploads_bucket.sql), y acá solo llega el `storage_path`
+// — este endpoint lo descarga server-to-server (sin ese límite) y lo borra al
+// terminar. `content` (texto pegado) sigue viniendo inline, es siempre chico.
 async function handleIngest(request: Request): Promise<Response> {
   const supabase = createSupabaseServerClient();
   const {
@@ -34,24 +37,19 @@ async function handleIngest(request: Request): Promise<Response> {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  const contentLength = Number(request.headers.get("content-length") ?? 0);
-  if (contentLength > MAX_FILE_BYTES) {
-    const mb = (contentLength / (1024 * 1024)).toFixed(1);
-    return NextResponse.json(
-      {
-        error: `el archivo pesa ${mb}MB — el máximo soportado es 8MB. Suele ser por imágenes de alta resolución dentro del PDF/DOCX: exporta una versión más liviana (solo texto/baja resolución) o pega el contenido directo en el campo de markdown.`,
-      },
-      { status: 413 }
-    );
-  }
-
-  const form = await request.formData();
-  const file = form.get("file") as File | null;
-  const title = (form.get("title") as string | null)?.trim();
-  const inlineContent = form.get("content") as string | null;
+  const body = (await request.json()) as {
+    title?: string;
+    vertical_id?: string;
+    content?: string;
+    storage_path?: string;
+    filename?: string;
+  };
+  const title = body.title?.trim();
+  const inlineContent = body.content;
+  const storagePath = body.storage_path?.trim();
   // El agente SIEMPRE responde dentro de una vertical — no existe el concepto
   // de "documento general" — así que todo documento debe estar atado a una.
-  const verticalId = (form.get("vertical_id") as string | null)?.trim();
+  const verticalId = body.vertical_id?.trim();
 
   if (!title) return NextResponse.json({ error: "title requerido" }, { status: 400 });
   if (!verticalId) return NextResponse.json({ error: "vertical_id requerido" }, { status: 400 });
@@ -60,8 +58,8 @@ async function handleIngest(request: Request): Promise<Response> {
   let format: string;
   let filename: string;
 
-  if (file) {
-    filename = file.name;
+  if (storagePath) {
+    filename = body.filename?.trim() || storagePath.split("/").pop() || "archivo";
     const ext = filename.split(".").pop()?.toLowerCase() ?? "";
     if (!ACCEPTED.has(ext)) {
       return NextResponse.json(
@@ -69,14 +67,28 @@ async function handleIngest(request: Request): Promise<Response> {
         { status: 400 }
       );
     }
-    const buf = await file.arrayBuffer();
+    // Service role: el objeto lo subió el mismo usuario autenticado (RLS del
+    // bucket ya lo verificó al subir), acá solo lo leemos server-to-server.
+    const storageAdmin = createServiceClient();
+    const { data: fileData, error: dlErr } = await storageAdmin.storage
+      .from(KB_UPLOADS_BUCKET)
+      .download(storagePath);
+    if (dlErr || !fileData) {
+      return NextResponse.json(
+        { error: `no se pudo leer el archivo subido: ${dlErr?.message ?? "no encontrado"}` },
+        { status: 404 }
+      );
+    }
+    const buf = await fileData.arrayBuffer();
     let parsed: Awaited<ReturnType<typeof parseDocument>>;
     try {
       parsed = await parseDocument(buf, filename);
     } catch (parseErr) {
+      await storageAdmin.storage.from(KB_UPLOADS_BUCKET).remove([storagePath]);
       const msg = parseErr instanceof Error ? parseErr.message : String(parseErr);
       return NextResponse.json({ error: `no se pudo leer el archivo .${ext}: ${msg}` }, { status: 422 });
     }
+    await storageAdmin.storage.from(KB_UPLOADS_BUCKET).remove([storagePath]);
     text = parsed.text;
     format = parsed.format;
   } else if (inlineContent?.trim()) {
