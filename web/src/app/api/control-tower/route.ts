@@ -101,7 +101,10 @@ export async function GET() {
     }
   }
   if (draftRefIds.length > 0) {
-    const { data: drs } = await supabase.from("drafts").select("id, messages(lead_id)").in("id", draftRefIds);
+    const { data: drs } = await supabase
+      .from("drafts")
+      .select("id, messages!drafts_message_id_fkey(lead_id)")
+      .in("id", draftRefIds);
     for (const d of (drs ?? []) as Array<{ id: string; messages: { lead_id: string } | { lead_id: string }[] | null }>) {
       const m = Array.isArray(d.messages) ? d.messages[0] : d.messages;
       if (m?.lead_id) {

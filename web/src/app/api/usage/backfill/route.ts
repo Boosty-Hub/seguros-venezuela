@@ -40,7 +40,7 @@ export async function POST(request: Request) {
   try {
     let draftsQuery = supabase
       .from("drafts")
-      .select("id, agent_metadata, created_at, messages(lead_id)")
+      .select("id, agent_metadata, created_at, messages!drafts_message_id_fkey(lead_id)")
       .not("agent_metadata->session_id", "is", null)
       .order("created_at", { ascending: true })
       .limit(BATCH_SIZE);
