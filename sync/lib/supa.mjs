@@ -133,12 +133,19 @@ export async function getKommoState() {
 
 /**
  * Filtro Postgrest (OR, ilike) que solo deja pasar tickets "sin asesor real":
- * el campo Asesor de Zoho vale "No tengo", "Sin Asesor", "Sin Asesor (KG)" o
- * "Seguros Venezuela" (con variantes de mayusculas/espacios/sufijos como
- * ", C.A."). El resto de tickets SI tienen un asesor/corredor asignado y no
- * deben entrar al CRM.
+ * el campo Asesor de Zoho vale "No tengo", "Sin Asesor", "Sin Asesor (KG)",
+ * "Seguros Venezuela", "Directo Caracas" o "No Posee" (con variantes de
+ * mayusculas/espacios/sufijos como ", C.A."). El resto de tickets SI tienen un
+ * asesor/corredor asignado y no deben entrar al CRM.
+ *
+ * OJO con los patrones de "Directo": el ilike es *directo*caracas*, NO *directo*.
+ * En Zoho existen tambien "DIRECTO VALENCIA", "DIRECTO SAN CRISTOBAL" y
+ * "Directo" suelto, que por decision del operador siguen yendo al embudo B2B
+ * — un patron *directo* los arrastraria a B2C por error.
  */
-const FILTRO_SIN_ASESOR = 'or=(asesor.ilike.*no*tengo*,asesor.ilike.*sin*asesor*,asesor.ilike.*seguros*venezuela*)';
+const FILTRO_SIN_ASESOR =
+  'or=(asesor.ilike.*no*tengo*,asesor.ilike.*sin*asesor*,asesor.ilike.*seguros*venezuela*' +
+  ',asesor.ilike.*directo*caracas*,asesor.ilike.*no*posee*)';
 
 /**
  * Tickets que todavia no tienen lead en Kommo y son POSTERIORES al corte.
@@ -168,17 +175,22 @@ export async function getTicketsPendingKommo({ since, limit = 200 } = {}) {
 
 /**
  * Filtro inverso: tickets CON asesor/corredor real asignado — es decir,
- * cualquier valor de Asesor que NO sea ninguno de los 4 de FILTRO_SIN_ASESOR.
- * Excluye ademas asesor null/vacio (dato incompleto, no se asume corredor).
- * Estos son los que van al embudo B2B (corredores que cotizan via Sofi u
- * otras plataformas) en vez del B2C.
+ * cualquier valor de Asesor que NO cumpla FILTRO_SIN_ASESOR. Excluye ademas
+ * asesor null/vacio (dato incompleto, no se asume corredor). Estos son los que
+ * van al embudo B2B (corredores que cotizan via Sofi u otras plataformas) en
+ * vez del B2C.
+ *
+ * Debe ser el complemento EXACTO de FILTRO_SIN_ASESOR: si se agrega un valor
+ * alla y no se excluye aca, el mismo ticket calificaria para los dos embudos.
  */
 const FILTRO_CON_ASESOR =
   'asesor=not.is.null' +
   '&asesor=neq.' +
   '&asesor=not.ilike.*no*tengo*' +
   '&asesor=not.ilike.*sin*asesor*' +
-  '&asesor=not.ilike.*seguros*venezuela*';
+  '&asesor=not.ilike.*seguros*venezuela*' +
+  '&asesor=not.ilike.*directo*caracas*' +
+  '&asesor=not.ilike.*no*posee*';
 
 /** Estado de la integracion Kommo B2B (corte, contadores) — espejo de getKommoState(). */
 export async function getKommoB2BState() {
@@ -229,7 +241,7 @@ export async function getTicketsKommoConAsesor({ limit = 20000 } = {}) {
   const url =
     `${SUPABASE_URL}/rest/v1/tickets?select=id,ticket_number,asesor,kommo_lead_id` +
     `&kommo_lead_id=not.is.null` +
-    `&or=(asesor.is.null,and(asesor.not.ilike.*no*tengo*,asesor.not.ilike.*sin*asesor*,asesor.not.ilike.*seguros*venezuela*))`;
+    `&or=(asesor.is.null,and(asesor.not.ilike.*no*tengo*,asesor.not.ilike.*sin*asesor*,asesor.not.ilike.*seguros*venezuela*,asesor.not.ilike.*directo*caracas*,asesor.not.ilike.*no*posee*))`;
   const PAGE = 1000;
   const out = [];
   for (let from = 0; from < limit; from += PAGE) {

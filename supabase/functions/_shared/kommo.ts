@@ -173,6 +173,58 @@ export async function fetchPipelineStages(
   return out;
 }
 
+/**
+ * Busca etapas por nombre TOLERANDO que en Kommo le hayan agregado un sufijo
+ * aclaratorio al nombre.
+ *
+ * Por qué existe: el operador renombró en Kommo "cliente por atender" →
+ * "cliente por atender (atender)" y "AGENTE" → "AGENTE (no atender)". Todo lo
+ * que resolvía la etapa por igualdad exacta se rompió EN SILENCIO: la
+ * migración Zoho→Kommo B2C dejó de crear leads, y `mover_etapa` (la escalación
+ * a un asesor humano) empezó a fallar. Un nombre de etapa es texto que el
+ * operador edita cuando quiere; el matcher no puede asumir que es estable.
+ *
+ * Estrategia, de más estricta a más laxa (se corta en el primer nivel que dé
+ * resultado, para no mezclar precisión con adivinanza):
+ *   0. igualdad LITERAL (mayúsculas y acentos incluidos) — desempata cuando el
+ *      CRM tiene dos etapas que solo difieren en eso. Caso real: el pipeline
+ *      CONFIGURACIONES tiene "Apertura de códigos" Y "APERTURA DE CODIGOS",
+ *      que normalizados son idénticos; sin este nivel, mover a esa etapa era
+ *      ambiguo y fallaba.
+ *   1. igualdad normalizada (sin acentos ni mayúsculas)
+ *   2. la etapa EMPIEZA por lo buscado ("cliente por atender (atender)")
+ *   3. la etapa CONTIENE lo buscado
+ *
+ * Devuelve TODAS las coincidencias del nivel que aplicó — el llamador decide
+ * qué hacer si hay más de una (nunca elegir a ciegas).
+ */
+export function matchStagesByName(
+  stages: KommoStageLite[],
+  stageName: string,
+  pipelineName?: string
+): KommoStageLite[] {
+  const norm = (s: string) =>
+    (s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
+  const wantS = norm(stageName);
+  if (!wantS) return [];
+
+  let pool = stages;
+  if (pipelineName) {
+    const wantP = norm(pipelineName);
+    pool = stages.filter(
+      (s) => norm(s.pipelineName) === wantP || norm(s.pipelineName).includes(wantP)
+    );
+  }
+
+  const literal = pool.filter((s) => (s.name || "").trim() === stageName.trim());
+  if (literal.length === 1) return literal;
+  const exact = pool.filter((s) => norm(s.name) === wantS);
+  if (exact.length > 0) return exact;
+  const prefix = pool.filter((s) => norm(s.name).startsWith(wantS));
+  if (prefix.length > 0) return prefix;
+  return pool.filter((s) => norm(s.name).includes(wantS));
+}
+
 export type KommoFieldLite = { id: number; name: string };
 
 /**

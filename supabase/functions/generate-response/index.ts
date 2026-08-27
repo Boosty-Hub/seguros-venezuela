@@ -18,6 +18,7 @@ import {
   fetchPipelineStages,
   fetchEntityFields,
   runSalesbot,
+  matchStagesByName,
   type KommoStageLite,
   type KommoFieldLite,
 } from "../_shared/kommo.ts";
@@ -391,8 +392,10 @@ async function runCrmTool(
     if (!stageName) return "ERROR_VALIDACION: falta 'stage_name'.";
     const pipelineName = String(input.pipeline_name ?? "").trim();
     const stages = await getStages(ctx.domain, ctx.token);
-    let matches = stages.filter((s) => norm(s.name) === norm(stageName));
-    if (pipelineName) matches = matches.filter((s) => norm(s.pipelineName) === norm(pipelineName));
+    // Tolerante a sufijos en el nombre de la etapa: el operador renombró
+    // "cliente por atender" → "cliente por atender (atender)" en Kommo y la
+    // igualdad exacta dejó de encontrarla, rompiendo la escalación a humano.
+    const matches = matchStagesByName(stages, stageName, pipelineName || undefined);
     if (matches.length === 0) {
       const opciones = stages.map((s) => `"${s.name}" (pipeline "${s.pipelineName}")`).join(", ");
       return `No encontré una etapa llamada "${stageName}". Etapas disponibles: ${opciones || "(ninguna)"}.`;

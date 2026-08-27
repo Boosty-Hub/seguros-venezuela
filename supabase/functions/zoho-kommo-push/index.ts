@@ -7,7 +7,8 @@
 //
 //   B2C (embudo "VENTAS B2C" / etapa "cliente por atender"):
 //     tickets cuyo campo Asesor es "No tengo", "Sin Asesor", "Sin Asesor
-//     (KG)" o "Seguros Venezuela" — sin corredor real asignado.
+//     (KG)", "Seguros Venezuela", "Directo Caracas" o "No Posee" — sin
+//     corredor real asignado.
 //   B2B (embudo "VENTAS B2B" / etapa "DATA ZOHO DESK"):
 //     el resto — tickets con un corredor/asesor real (cotizan vía Sofi u
 //     otras plataformas). Excluye asesor null/vacío (dato incompleto).
@@ -28,7 +29,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { loadConfig } from "../_shared/config.ts";
-import { fetchPipelineStages, type KommoStageLite } from "../_shared/kommo.ts";
+import { fetchPipelineStages, matchStagesByName, type KommoStageLite } from "../_shared/kommo.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -56,12 +57,22 @@ function normalizePhone(raw: unknown): string | null {
 }
 
 // ---------------- Filtros de Asesor (puerto de sync/lib/supa.mjs) ----------------
-// B2C: "sin asesor real" (No tengo / Sin Asesor / Sin Asesor (KG) / Seguros Venezuela).
+// Mantener EN SINCRONÍA con sync/lib/supa.mjs: son las mismas reglas en dos
+// runtimes (este cron y el script de Node). Y CON_ASESOR debe ser el
+// complemento exacto de SIN_ASESOR, o un ticket calificaría para los dos embudos.
+//
+// B2C: "sin asesor real" (No tengo / Sin Asesor / Sin Asesor (KG) / Seguros
+// Venezuela / Directo Caracas / No Posee).
+// OJO: el patrón es *directo*caracas*, NO *directo*. En Zoho hay también
+// "DIRECTO VALENCIA", "DIRECTO SAN CRISTOBAL" y "Directo" suelto, que por
+// decisión del operador siguen yendo a B2B.
 const FILTRO_SIN_ASESOR =
-  "or=(asesor.ilike.*no*tengo*,asesor.ilike.*sin*asesor*,asesor.ilike.*seguros*venezuela*)";
+  "or=(asesor.ilike.*no*tengo*,asesor.ilike.*sin*asesor*,asesor.ilike.*seguros*venezuela*" +
+  ",asesor.ilike.*directo*caracas*,asesor.ilike.*no*posee*)";
 // B2B: inverso — asesor real asignado (excluye null/vacío).
 const FILTRO_CON_ASESOR =
-  "asesor=not.is.null&asesor=neq.&asesor=not.ilike.*no*tengo*&asesor=not.ilike.*sin*asesor*&asesor=not.ilike.*seguros*venezuela*";
+  "asesor=not.is.null&asesor=neq.&asesor=not.ilike.*no*tengo*&asesor=not.ilike.*sin*asesor*&asesor=not.ilike.*seguros*venezuela*" +
+  "&asesor=not.ilike.*directo*caracas*&asesor=not.ilike.*no*posee*";
 
 type Ticket = {
   id: string;
@@ -135,18 +146,26 @@ async function markKommoSynced(pairs: Array<{ sourceId: string; leadId: string |
 }
 
 // ---------------- Kommo: resolver destino + crear leads ----------------
+// Usa matchStagesByName (tolerante a sufijos): el operador renombró en Kommo
+// "cliente por atender" → "cliente por atender (atender)" y la igualdad exacta
+// que había acá dejó de encontrarla, así que TODA la migración B2C venía
+// fallando en silencio. Si hay más de una candidata se falla explícito en vez
+// de elegir a ciegas.
 function resolveStage(stages: KommoStageLite[], pipelineName: string, statusName: string) {
   const norm = (s: string) => String(s || "").trim().toLowerCase();
-  const wantP = norm(pipelineName);
-  const wantS = norm(statusName);
-  const candidates = stages.filter((s) => norm(s.pipelineName) === wantP || norm(s.pipelineName).includes(wantP));
-  const match = candidates.find((s) => norm(s.name) === wantS);
-  if (!match) {
+  const matches = matchStagesByName(stages, statusName, pipelineName);
+  if (matches.length !== 1) {
+    const candidates = stages.filter(
+      (s) => norm(s.pipelineName) === norm(pipelineName) || norm(s.pipelineName).includes(norm(pipelineName))
+    );
     throw new Error(
-      `No se encontró la etapa "${statusName}" en el embudo "${pipelineName}". ` +
-      `Etapas del embudo: ${candidates.map((s) => s.name).join(" | ") || "(embudo no encontrado)"}`
+      matches.length === 0
+        ? `No se encontró la etapa "${statusName}" en el embudo "${pipelineName}". ` +
+          `Etapas del embudo: ${candidates.map((s) => s.name).join(" | ") || "(embudo no encontrado)"}`
+        : `La etapa "${statusName}" es ambigua en "${pipelineName}": ${matches.map((s) => s.name).join(" | ")}. Precisa el nombre.`
     );
   }
+  const match = matches[0];
   return { pipelineId: match.pipelineId, statusId: match.id, pipelineName: match.pipelineName, statusName: match.name };
 }
 
