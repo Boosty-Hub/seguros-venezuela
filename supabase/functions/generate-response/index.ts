@@ -274,7 +274,11 @@ type CrmContext = {
   imagesSent?: string[];
 };
 
-const CRM_TOOL_NAMES = new Set(["mover_etapa", "actualizar_lead", "actualizar_contacto", "enviar_imagen"]);
+const CRM_TOOL_NAMES = new Set(["mover_etapa", "marcar_perdido", "actualizar_lead", "actualizar_contacto", "enviar_imagen"]);
+
+// Status GLOBAL de Kommo para "perdido": existe en los 4 pipelines, así que
+// fijarlo NO mueve el lead de embudo (igual que 142 = Ganado).
+const KOMMO_LOST_STATUS_ID = 143;
 
 // Mapa tema → imagen de paso a paso (Supabase Storage, bucket público
 // `agent-media`). Única fuente de verdad de qué URL corresponde a cada
@@ -330,6 +334,28 @@ async function getStages(domain: string, token: string): Promise<KommoStageLite[
   if (stagesCache && Date.now() - stagesCache.loadedAt < CRM_TTL_MS) return stagesCache.items;
   const items = await fetchPipelineStages(domain, token);
   stagesCache = { items, loadedAt: Date.now() };
+  return items;
+}
+
+// Razones de pérdida de Kommo, resueltas POR NOMBRE (mismo criterio que etapas
+// y campos) para no hardcodear IDs que el operador puede recrear en el CRM.
+type KommoLossReason = { id: number; name: string };
+let lossReasonsCache: { items: KommoLossReason[]; loadedAt: number } | null = null;
+
+async function getLossReasons(domain: string, token: string): Promise<KommoLossReason[]> {
+  if (lossReasonsCache && Date.now() - lossReasonsCache.loadedAt < CRM_TTL_MS) {
+    return lossReasonsCache.items;
+  }
+  const res = await fetch(`https://${domain}/api/v4/leads/loss_reasons?limit=250`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`loss_reasons: ${res.status} ${await res.text()}`);
+  // 204 = no hay razones configuradas en la cuenta.
+  const body = res.status === 204 ? null : await res.json();
+  // deno-lint-ignore no-explicit-any
+  const raw = (body?._embedded?.loss_reasons ?? []) as any[];
+  const items = raw.map((r) => ({ id: Number(r.id), name: String(r.name ?? "") }));
+  lossReasonsCache = { items, loadedAt: Date.now() };
   return items;
 }
 
@@ -418,6 +444,55 @@ async function runCrmTool(
     }
 
     return `Listo: moví el lead a la etapa "${target.name}" (pipeline "${target.pipelineName}").`;
+  }
+
+  if (name === "marcar_perdido") {
+    // Comparte gate con mover_etapa: marcar perdido ES un movimiento de etapa.
+    if (!ctx.gate.moveStage) return "La acción 'descartar lead' está desactivada por el operador. No la realices.";
+    if (ctx.kommoLeadId == null) return "No tengo el id de Kommo de este lead; no puedo descartarlo.";
+    const motivo = String(input.motivo ?? "").trim();
+    if (!motivo) return "ERROR_VALIDACION: falta 'motivo'.";
+
+    const reasons = await getLossReasons(ctx.domain, ctx.token);
+    const reason = reasons.find((r) => norm(r.name) === norm(motivo));
+    if (!reason) {
+      const opciones = reasons.map((r) => `"${r.name}"`).join(", ");
+      return `No existe una razón de pérdida llamada "${motivo}". Razones configuradas: ${opciones || "(ninguna)"}.`;
+    }
+
+    // Un solo PATCH: status_id (143, global) + loss_reason_id. Sin pipeline_id
+    // el lead queda perdido DENTRO del embudo donde ya estaba.
+    const res = await fetch(`https://${ctx.domain}/api/v4/leads/${ctx.kommoLeadId}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${ctx.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ status_id: KOMMO_LOST_STATUS_ID, loss_reason_id: reason.id }),
+    });
+    if (!res.ok) throw new Error(`marcar_perdido: ${res.status} ${await res.text()}`);
+
+    if (ctx.internalLeadId) {
+      try {
+        const stages = await getStages(ctx.domain, ctx.token);
+        const prevStageId = ctx.currentKommoStageId;
+        await supabase.from("lead_stage_events").insert({
+          lead_id: ctx.internalLeadId,
+          from_stage_id: prevStageId ?? null,
+          to_stage_id: KOMMO_LOST_STATUS_ID,
+          from_stage_name: prevStageId != null ? (stages.find((s) => s.id === prevStageId)?.name ?? null) : null,
+          to_stage_name: `Perdido — ${reason.name}`,
+          pipeline_name: null,
+          moved_by: "agente",
+          draft_id: ctx.draftId ?? null,
+        });
+        await supabase
+          .from("leads")
+          .update({ kommo_stage_id: KOMMO_LOST_STATUS_ID })
+          .eq("id", ctx.internalLeadId);
+      } catch (evErr) {
+        console.warn("lead_stage_events insert (perdido) — fail-open:", evErr instanceof Error ? evErr.message : String(evErr));
+      }
+    }
+
+    return `Listo: marqué el lead como perdido con la razón "${reason.name}". No le escribas más sobre este tema.`;
   }
 
   if (name === "actualizar_lead") {

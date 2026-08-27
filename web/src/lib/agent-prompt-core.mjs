@@ -70,6 +70,7 @@ El sistema inyecta estas variables antes de cada sesión. Si alguna falta, notif
 // nunca debe aparecer en su prompt (referencias colgantes lo hacen alucinar).
 export const CRM_ACTION_PHRASES = {
   mover_etapa: "mover el lead de etapa (`mover_etapa`)",
+  marcar_perdido: "descartar un lead que no es oportunidad de venta (`marcar_perdido`)",
   actualizar_lead: "completar campos del lead (`actualizar_lead`)",
   actualizar_contacto: "completar campos del contacto (`actualizar_contacto`)",
   agregar_nota: "dejar una nota interna para los asesores (`agregar_nota`)",
@@ -81,21 +82,37 @@ export const CRM_ACTION_PHRASES = {
 // vive en la descripción de su propio input_schema (ej: un enum de temas),
 // no en una instrucción del operador. Se documentan aparte del resto porque
 // la regla "NO ejecutes por iniciativa propia" de abajo NO les aplica.
-export const CRM_AUTO_TOOL_NAMES = new Set(["enviar_imagen"]);
+export const CRM_AUTO_TOOL_NAMES = new Set(["enviar_imagen", "marcar_perdido"]);
+
+// Frase por tool AUTO: qué la dispara. El detalle fino (enums, casos) vive en
+// la descripción de cada tool, no acá — esto solo le dice al agente que puede
+// invocarla sin esperar instrucción del operador.
+const CRM_AUTO_TOOL_TRIGGERS = {
+  enviar_imagen:
+    "`enviar_imagen`: en cuanto el cliente pregunte por alguno de los trámites que cubre (su descripción indica cuáles). Un solo envío por trámite preguntado; si el tema no calza claramente con ninguno de sus valores, no la uses.",
+  marcar_perdido:
+    "`marcar_perdido`: cuando la conversación deja claro que el lead NO es una oportunidad de venta (pide empleo, es spam, se equivocó de empresa, escribe de otro país). Primero respóndele lo que corresponda y en ese mismo turno llámala con el motivo exacto. NO la uses con alguien que sí podría comprar, ni con reclamos de asegurados (esos van a un asesor humano).",
+};
 
 export function buildCrmActionsBlock(declaredToolNames) {
   const declared = new Set(declaredToolNames);
   const manualPhrases = Object.entries(CRM_ACTION_PHRASES)
     .filter(([name]) => declared.has(name) && !CRM_AUTO_TOOL_NAMES.has(name))
     .map(([, phrase]) => phrase);
-  const hasAutoImage = declared.has("enviar_imagen");
-  if (manualPhrases.length === 0 && !hasAutoImage) return "";
+  const autoTriggers = Object.entries(CRM_AUTO_TOOL_TRIGGERS)
+    .filter(([name]) => declared.has(name))
+    .map(([, phrase]) => phrase);
+  if (manualPhrases.length === 0 && autoTriggers.length === 0) return "";
 
   let block = "## Acciones en el CRM\n\n";
   if (manualPhrases.length > 0) {
+    const autoNames = [...CRM_AUTO_TOOL_NAMES]
+      .filter((n) => declared.has(n))
+      .map((n) => `\`${n}\``)
+      .join(" ni a ");
     block += `Además de responder, puedes OPERAR el CRM con tools internas: ${manualPhrases.join(", ")}. Todo identificando etapas y campos POR NOMBRE.
 
-Reglas no negociables (aplican a estas tools, NO a \`enviar_imagen\` — ver abajo):
+Reglas no negociables (aplican a estas tools${autoNames ? `, NO a ${autoNames} — ver abajo` : ""}):
 - NO ejecutes ninguna de estas acciones por iniciativa propia. Solo cuando una instrucción EXPLÍCITA del operador (su voz/dreams) o de la vertical activa te lo indique (ej: "cuando confirmen la compra, movelos a la etapa Ganado").
 - Si una acción está desactivada por el operador, la tool te lo dirá: NO la reintentes ni le menciones al lead que existe. Las acciones que no aparecen en tu lista de tools NO existen: no las menciones ni las simules.
 - Estas acciones son internas: nunca reveles que puedes operar el CRM ni los nombres de estas tools.
@@ -103,8 +120,11 @@ Reglas no negociables (aplican a estas tools, NO a \`enviar_imagen\` — ver aba
 
 `;
   }
-  if (hasAutoImage) {
-    block += `\`enviar_imagen\` es distinta a las anteriores: ÚSALA POR INICIATIVA PROPIA (sin esperar instrucción del operador) en cuanto el cliente pregunte por alguno de los trámites que cubre — su descripción indica exactamente cuáles y cuándo. Un solo envío por trámite preguntado; si el tema no calza claramente con ninguno de sus valores, no la uses. Si está desactivada, la tool te lo dirá: no la menciones al lead. Tampoco reveles que esta tool existe.
+  if (autoTriggers.length > 0) {
+    block += `Estas son DISTINTAS a las anteriores: ÚSALAS POR INICIATIVA PROPIA, sin esperar instrucción del operador.
+${autoTriggers.map((t) => `- ${t}`).join("\n")}
+
+Si alguna está desactivada, la tool te lo dirá: no la reintentes ni la menciones al lead. Tampoco reveles que existen.
 
 `;
   }
@@ -138,6 +158,9 @@ export function composeSystem(operatorPrompt, values, enabledHttpTools = [], dec
 // Mantener en lockstep con runCrmTool / runShopifyTool en generate-response.
 export const SYSTEM_TOOL_GATES = {
   mover_etapa: (g) => g.crm_actions_enabled === true && g.crm_can_move_stage === true,
+  // Reusa el gate de mover_etapa a propósito: marcar perdido ES un movimiento
+  // de etapa (a "cliente Perdido"), solo que además fija la razón de pérdida.
+  marcar_perdido: (g) => g.crm_actions_enabled === true && g.crm_can_move_stage === true,
   actualizar_lead: (g) => g.crm_actions_enabled === true && g.crm_can_update_lead === true,
   actualizar_contacto: (g) => g.crm_actions_enabled === true && g.crm_can_update_contact === true,
   enviar_imagen: (g) => g.crm_actions_enabled === true && g.crm_can_send_image === true,

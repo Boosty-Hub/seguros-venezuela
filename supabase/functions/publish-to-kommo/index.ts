@@ -54,6 +54,10 @@ async function getConfig(): Promise<KommoConfig | null> {
 // ---- Selecciona drafts approved no enviados, con info del lead ----
 // publishFrom: línea de corte; si está, se ignoran los drafts anteriores
 // (borradores de validación viejos que NO deben dispararse al ir a producción).
+// Intentos de publicación antes de dar el draft por perdido. El cron reintenta
+// uno por ciclo; 3 cubre un error transitorio de Kommo sin insistir para siempre.
+const MAX_PUBLISH_ATTEMPTS = 3;
+
 async function pickPending(publishFrom: string | null, limit = 10) {
   let q = supabase
     .from("drafts")
@@ -167,6 +171,21 @@ Deno.serve(async (req: Request) => {
     const errors: Array<{ draft_id: string; error: string }> = [];
 
     for (const d of pending) {
+      // Un body vacío no se publica: mandaría un mensaje en blanco al cliente.
+      // Es terminal — reintentar no lo va a llenar.
+      if (!String(d.body ?? "").trim()) {
+        await supabase
+          .from("drafts")
+          .update({
+            status: "failed",
+            agent_metadata: { ...(d.agent_metadata ?? {}), publish_error: "body vacío — no se publica" },
+          })
+          .eq("id", d.id);
+        errors.push({ draft_id: d.id, error: "body vacío" });
+        failed++;
+        continue;
+      }
+
       try {
         await publishOne(d, config, kommoDomain, kommoToken);
         await supabase
@@ -176,14 +195,27 @@ Deno.serve(async (req: Request) => {
         published++;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
+        // Kommo devuelve errores TRANSITORIOS (visto en producción: un 400
+        // "Not enough rights" en 2 de 128 envíos, con el token intacto y
+        // permisos de admin — al reintentar el mismo PATCH a mano dio 200).
+        // Antes cualquier fallo dejaba el draft en 'failed' para siempre y
+        // NADIE lo reintentaba: el cliente se quedaba sin respuesta y en
+        // silencio. Ahora se deja en 'approved' para que el próximo ciclo del
+        // cron lo retome, hasta MAX_PUBLISH_ATTEMPTS.
+        const prev = (d.agent_metadata ?? {}) as Record<string, unknown>;
+        const attempts = Number(prev.publish_attempts ?? 0) + 1;
+        const giveUp = attempts >= MAX_PUBLISH_ATTEMPTS;
         await supabase
           .from("drafts")
           .update({
-            status: "failed",
-            agent_metadata: { publish_error: msg },
+            // OJO: merge, no reemplazo. Antes se pisaba agent_metadata entero
+            // y se perdían session_id / tool_calls / model / vertical — o sea
+            // la trazabilidad y la atribución de consumo del draft.
+            status: giveUp ? "failed" : "approved",
+            agent_metadata: { ...prev, publish_error: msg, publish_attempts: attempts },
           })
           .eq("id", d.id);
-        errors.push({ draft_id: d.id, error: msg });
+        errors.push({ draft_id: d.id, error: `${msg}${giveUp ? "" : ` (intento ${attempts}, se reintenta)`}` });
         failed++;
       }
     }
