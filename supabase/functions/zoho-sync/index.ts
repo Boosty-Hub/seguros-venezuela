@@ -120,6 +120,46 @@ async function upsert(rows: any[]) {
   return rows.length;
 }
 
+async function sbGet(path: string) {
+  const r = await fetch(`${SB_URL}/rest/v1/${path}`, {
+    headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` },
+  });
+  if (!r.ok) throw new Error(`Supabase GET ${path} HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  return r.json();
+}
+
+/** Ticket mas nuevo que ya tenemos. Es el corte del incremental. */
+async function watermark(): Promise<string | null> {
+  const j = await sbGet("tickets?select=created_time&order=created_time.desc.nullslast&limit=1");
+  return j[0]?.created_time ?? null;
+}
+
+/** Abiertos que llevan mas tiempo sin refrescar (para ver cambios de estado). */
+async function abiertosRancios(limit: number): Promise<string[]> {
+  const j = await sbGet(
+    `tickets?select=id&status_type=in.(Open,"On Hold")&order=synced_at.asc.nullsfirst&limit=${limit}`,
+  );
+  return j.map((x: any) => String(x.id));
+}
+
+/** Detalle en paralelo acotado: el runtime de Edge no aguanta 200 secuenciales. */
+async function detalles(ids: string[], token: string, concurrencia = 5) {
+  const out: any[] = [];
+  let i = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(concurrencia, ids.length) }, async () => {
+      while (i < ids.length) {
+        const id = ids[i++];
+        try {
+          const d = await deskGet(`tickets/${id}`, { include: "contacts,assignee" }, token);
+          if (d?.id) out.push(ticketToRow(d));
+        } catch { /* un ticket que falla no tumba la corrida; vuelve al siguiente ciclo */ }
+      }
+    }),
+  );
+  return out;
+}
+
 Deno.serve(async (req) => {
   try {
     let payload: any = {};
@@ -129,35 +169,69 @@ Deno.serve(async (req) => {
     const ticketId = payload.ticketId || payload.id || payload?.ticket?.id || null;
     const token = await zohoToken();
     let rows: any[] = [];
+    const info: Record<string, unknown> = {};
 
     if (ticketId) {
       // Actualizacion instantanea de UN ticket (webhook)
       const d = await deskGet(`tickets/${ticketId}`, { include: "contacts,assignee" }, token);
       if (d?.id) rows = [ticketToRow(d)];
     } else {
-      // Incremental: tickets modificados recientemente
-      const minutes = Number(payload.minutes ?? 15);
-      const cutoff = Date.now() - minutes * 60_000;
+      // Incremental: tickets NUEVOS desde el ultimo que tenemos.
+      //
+      // El corte es `createdTime`, NO `modifiedTime`: el listado de /tickets de
+      // Zoho no devuelve `modifiedTime` (viene solo en el detalle). La version
+      // anterior filtraba por `modifiedTime` y, como siempre era undefined,
+      // cortaba en el PRIMER ticket de la lista y sincronizaba cero — en
+      // silencio, respondiendo ok:true, upserted:0 cada 5 minutos. Se detecto
+      // con 3 dias de tickets sin entrar.
+      const wm = await watermark();
+      const wmMs = wm ? new Date(wm).getTime() : 0;
+      info.watermark = wm;
+
+      const nuevos: { id: string; ct: number }[] = [];
       let from = 1;
       outer: for (let p = 0; p < 20; p++) {
         const j = await deskGet("tickets", {
           departmentId: DEPT, from: String(from), limit: "100",
-          sortBy: "-modifiedTime", include: "contacts,assignee",
+          sortBy: "-createdTime", include: "contacts,assignee",
         }, token);
         const list = j.data || [];
         if (!list.length) break;
         for (const t of list) {
-          const mt = t.modifiedTime ? new Date(t.modifiedTime).getTime() : 0;
-          if (mt < cutoff) break outer;
-          const d = await deskGet(`tickets/${t.id}`, { include: "contacts,assignee" }, token);
-          if (d?.id) rows.push(ticketToRow(d));
+          const ct = t.createdTime ? new Date(t.createdTime).getTime() : 0;
+          if (ct <= wmMs) break outer; // llegamos a lo ya sincronizado
+          nuevos.push({ id: String(t.id), ct });
         }
         from += 100;
         if (list.length < 100) break;
       }
+
+      // De mas viejo a mas nuevo y acotado: si hay un atraso grande, esta
+      // corrida trae un pedazo y el watermark avanza solo hasta ahi, asi que
+      // el siguiente ciclo sigue justo donde quedo. Al reves (los mas nuevos
+      // primero) el watermark saltaria al final y se perderia el hueco.
+      nuevos.sort((a, b) => a.ct - b.ct);
+      const MAX_POR_CORRIDA = 80;
+      const lote = nuevos.slice(0, MAX_POR_CORRIDA);
+      info.nuevos_detectados = nuevos.length;
+      info.pendientes = Math.max(0, nuevos.length - lote.length);
+
+      rows = await detalles(lote.map((x) => x.id), token);
+
+      // Refresco de estado de los abiertos mas rancios. Sin esto, un ticket
+      // que cambia de estado en Zoho nunca se entera de este lado (el listado
+      // no permite filtrar por modificacion).
+      const refrescar = Number(payload.refresh ?? 40);
+      if (refrescar > 0) {
+        const ids = await abiertosRancios(refrescar);
+        const rr = await detalles(ids, token);
+        info.refrescados = rr.length;
+        rows = rows.concat(rr);
+      }
     }
 
     const n = await upsert(rows);
+    Object.assign(info, { upserted: n });
 
     // El push a Kommo (B2C/B2B según el campo Asesor) NO se encadena desde
     // acá: se probó con fetch + EdgeRuntime.waitUntil (fire-and-forget) y no
@@ -167,7 +241,7 @@ Deno.serve(async (req) => {
     // independiente "zoho-kommo-push-safety" (cada 5 min, ver migración
     // 0060_zoho_kommo_cron.sql) — drena lo que este sync acaba de traer en,
     // como mucho, unos minutos de diferencia.
-    return new Response(JSON.stringify({ ok: true, upserted: n }), {
+    return new Response(JSON.stringify({ ok: true, ...info }), {
       headers: { "Content-Type": "application/json" },
     });
   } catch (e) {

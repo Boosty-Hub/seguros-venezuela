@@ -10,7 +10,11 @@ export type { StatCardProps, StatCardTone } from "./stat-card";
  */
 export function StatRow({ children }: { children: React.ReactNode }) {
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+    // data-stat-row: permite que un contenedor angosto (ej. /pipeline con el
+    // panel de analítica abierto) baje la fila a 2 columnas. Los breakpoints de
+    // Tailwind miran el viewport, no el contenedor, así que sin esto las cards
+    // quedan apretadas aunque la columna se haya encogido a la mitad.
+    <div data-stat-row className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
       {children}
     </div>
   );

@@ -127,11 +127,15 @@ Para apagarlo o pausar mensajes: ver `/agent` → pestaña Agente → interrupto
   agente, B2C) y un corredor tramitando a SUS clientes (va a B2B). La segunda
   se lee por intermediario: tabla de corredores ordenable por cualquier
   columna, paginada (100/500/1000), y al desplegar uno se ven sus clientes con
-  todas sus cotizaciones, con botón de expandir/colapsar todo. Fuente:
-  `zoho_pipeline_overview()` y `zoho_corredor_detalle()` (migraciones 0064 y
-  0065). Tras enriquecer 9.998 tickets con el campo Asesor que faltaba:
-  **B2C 2.512 · B2B 11.568 · sin atribución 111** (99,2% clasificado),
-  1.110 corredores y 8.214 clientes finales.
+  todas sus cotizaciones (colapsados por defecto), con botón de expandir/
+  colapsar todo. El botón **Analítica** abre un panel lateral que desplaza el
+  contenido a la mitad: plan, rangos de edad, cruce plan×edad, evolución
+  mensual, estado, concentración de corredores, repetición por cliente y prima.
+  Fuente: `zoho_pipeline_overview()`, `zoho_corredor_detalle()` y
+  `zoho_pipeline_analitica()` (migraciones 0064-0066). Tras enriquecer 9.998
+  tickets con el campo Asesor que faltaba: **B2C ~2.500 · B2B ~11.700 · sin
+  atribución 113** (99,2% clasificado), ~1.120 corredores y ~8.300 clientes.
+  `moneda` y `ramo` están vacías al 100% en Zoho: no se grafican a propósito.
 - **Bug de FK ambigua (`drafts`↔`messages`) corregido**: `publish-to-kommo`,
   `evaluate-outcomes` y `alerts-scan` tiraban 500 en cron por tener dos FKs
   entre esas tablas; se resolvió con el hint explícito
@@ -241,8 +245,15 @@ espacio). Aprovisionar/actualizar el Managed Agent de Anthropic: `node
 ## Trampas encontradas (no repetir el diagnóstico)
 
 **Pipeline Zoho/Kommo:**
-1. **Zoho no devuelve `modifiedTime` en el listado** de `/tickets` → el
-   watermark es `createdTime`.
+1. **Zoho no devuelve `modifiedTime` en el listado** de `/tickets` (solo viene
+   en el detalle) → el watermark es SIEMPRE `createdTime`. Costó un apagón de
+   3 días: la Edge Function `zoho-sync` filtraba el listado por `modifiedTime`,
+   que al ser `undefined` daba 0, cortaba en el PRIMER ticket y sincronizaba
+   cero — respondiendo `ok:true, upserted:0` cada 5 minutos, sin un error. Por
+   eso ahora la respuesta trae `watermark`/`nuevos_detectados`/`pendientes`: un
+   cero silencioso no se distingue de "no había nada" si no dices contra qué
+   comparaste. Para ver cambios de ESTADO (que el listado no permite filtrar)
+   hay una segunda pasada que refresca los abiertos más rancios.
 2. **La API de Kommo no borra leads** (`Allow: GET,POST,PATCH`). Limpiar =
    etiquetar y borrar desde la interfaz.
 3. **`filter[tags][0][name]` de Kommo no filtra fiable** — filtrar por
@@ -340,4 +351,8 @@ espacio). Aprovisionar/actualizar el Managed Agent de Anthropic: `node
   1000 filas de PostgREST y el bloqueo del endpoint de tokens de Zoho), y con
   esa data el módulo `/pipeline` ganó la vista B2C/B2B por corredor:
   tabla ordenable y paginada, cliente → sus cotizaciones, identidad de cliente
-  corregida a cédula + titular.
+  corregida a cédula + titular, y panel lateral de analítica. Al verificar los
+  crones se descubrió que **`zoho-sync` llevaba 3 días sin traer un solo
+  ticket** (filtraba por `modifiedTime`, que el listado de Zoho no devuelve):
+  corregido a watermark por `createdTime`, 236 tickets recuperados y migrados
+  a Kommo.

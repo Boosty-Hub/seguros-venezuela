@@ -284,14 +284,9 @@ export function ListaCorredores({ corredores, since }: { corredores: Corredor[];
 }
 
 function DetalleCorredor({ detalle }: { detalle: Detalle }) {
-  // Los clientes con varias cotizaciones arrancan abiertos: es justamente el
-  // caso que interesa mirar (mismo corredor cotizando varias veces a la misma
-  // persona — grupo familiar por edades, o comparativa de planes).
-  const inicial = useMemo(
-    () => new Set(detalle.clientes.filter((c) => c.n_cotizaciones > 1).map(claveCliente)),
-    [detalle]
-  );
-  const [abiertos, setAbiertos] = useState<Set<string>>(inicial);
+  // Todos los clientes arrancan colapsados: un corredor grande trae cientos y
+  // abrirlos de entrada hace ilegible la lista. "Expandir todo" está a un clic.
+  const [abiertos, setAbiertos] = useState<Set<string>>(new Set());
 
   const todosAbiertos = abiertos.size === detalle.clientes.length && detalle.clientes.length > 0;
 

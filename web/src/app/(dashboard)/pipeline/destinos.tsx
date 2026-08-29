@@ -1,6 +1,7 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { StatRow, StatCard, Users, Target, TrendUp } from "@/components/ui";
 import { ListaCorredores } from "./corredores";
+import { PanelAnalitica } from "./analitica-panel";
 
 // Vista "Destinos": a dónde va cada ticket de Zoho.
 //
@@ -45,7 +46,8 @@ export async function DestinosView({ since }: { since: string | null }) {
   const pendienteB2b = ov.b2b_tickets - ov.b2b_en_kommo;
 
   return (
-    <div className="space-y-8">
+    <PanelAnalitica since={since}>
+      <div className="space-y-8">
       <section className="space-y-3">
         <h2 className="text-sm font-semibold tracking-tight text-neutral-900">A dónde va cada ticket</h2>
         <StatRow>
@@ -108,6 +110,7 @@ export async function DestinosView({ since }: { since: string | null }) {
         </p>
         <ListaCorredores corredores={ov.corredores} since={since} />
       </section>
-    </div>
+      </div>
+    </PanelAnalitica>
   );
 }
