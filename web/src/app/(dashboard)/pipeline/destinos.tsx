@@ -103,8 +103,8 @@ export async function DestinosView({ since }: { since: string | null }) {
         </h2>
         <p className="text-[11px] text-neutral-500">
           Despliega un corredor para ver sus clientes y, dentro de cada cliente, todas sus cotizaciones. Los clientes
-          agrupan por cédula, así que varias cotizaciones a la misma persona (normalmente un grupo familiar, una por
-          edad) quedan juntas.
+          agrupan por cédula + titular, así que varias cotizaciones a la misma persona (normalmente un grupo familiar,
+          una por edad) quedan juntas, sin fusionar a gente distinta que comparte una cédula de relleno.
         </p>
         <ListaCorredores corredores={ov.corredores} since={since} />
       </section>

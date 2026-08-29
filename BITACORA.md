@@ -23,7 +23,7 @@ retomar el trabajo.
 
 ---
 
-## Estado actual (al 2026-08-26)
+## Estado actual (al 2026-08-29)
 
 **Agente de IA "Asesora Sofi" (Kommo, WhatsApp/Instagram): ✅ EN VIVO,
 publicando de verdad.** `publishing_enabled=true`, `bypass_review=true`.
@@ -44,10 +44,26 @@ Para apagarlo o pausar mensajes: ver `/agent` → pestaña Agente → interrupto
 - **Instagram y WhatsApp SÍ son canales seguros** para que el cliente
   comparta cédula/teléfono/correo/póliza — regla explícita en el prompt tras
   un caso real donde el agente dijo lo contrario.
-- **Acciones de CRM (mover_etapa, enviar_imagen, actualizar_lead/contacto):
-  se ejecutan YA contra Kommo real**, sin importar si "Publicar en Kommo"
-  está apagado — ese interruptor solo gobierna el envío de MENSAJES, no las
-  acciones de CRM.
+- **Acciones de CRM (mover_etapa, marcar_perdido, enviar_imagen,
+  actualizar_lead/contacto): se ejecutan YA contra Kommo real**, sin importar
+  si "Publicar en Kommo" está apagado — ese interruptor solo gobierna el envío
+  de MENSAJES, no las acciones de CRM.
+- **`marcar_perdido`**: el agente manda a Perdido (status global 143) a quien
+  busca empleo, spam o leads errados, con una de las 11 razones de pérdida de
+  Kommo. Kommo exige `loss_reason_id` **junto con** `status_id` en el mismo
+  PATCH (mandarlo solo da 400).
+- **Tono: concreto.** El agente no cierra con preguntas redundantes; al
+  escalar dice que un asesor ya tiene el caso y ofrece allanar o cotizar en
+  línea, sin volver a preguntar. Clientes molestos van al correo de ATC.
+- **Etapas: el agente se auto-sana.** Antes, si se perdía un webhook de
+  `leads.status`, `leads.kommo_stage_id` quedaba viejo y el lead dejaba de
+  recibir respuesta para siempre. Ahora `process-inbound` consulta la etapa
+  viva en Kommo antes de ignorar un lead por etapa.
+- **`publish-to-kommo` reintenta** (hasta 3 veces) y **fusiona**
+  `agent_metadata` en vez de sobrescribirlo. Antes, cualquier error dejaba el
+  draft en `failed` para siempre sin nada que lo reintentara (caso real: lead
+  #14764592, un 400 transitorio de Kommo) y se perdían `session_id`/
+  `tool_calls`/`model`/`vertical`.
 - **Envío de imágenes de trámites** (`enviar_imagen`, tool automática, sin
   esperar instrucción del operador): patchea `image_field_id` + corre
   `image_salesbot_id` en Kommo. Config en `kommo_publish_config`.
@@ -74,6 +90,11 @@ Para apagarlo o pausar mensajes: ver `/agent` → pestaña Agente → interrupto
 - **KB por vertical**: subida de documentos arreglada (el bug era 100%
   cliente — el botón "Guardar" quedaba deshabilitado en silencio si faltaba
   el título; ahora se deshabilita visiblemente y el error es prominente).
+  **Todo archivo pasa por un validador antes de entrar**: `prepare` extrae con
+  visión (PDF como `document` base64, imagen como `image`), `verify` hace que
+  un segundo modelo juzgue la extracción contra el original, e `ingest` solo
+  guarda si pasa. Si no pasa, **bloquea y avisa** — nunca entra data mala a
+  una vertical.
 - **Dreams**: fuerza español explícito (system + reglas de extracción; antes
   solo dependía de "igualar el registro de voz" y salían en inglés).
   Frecuencia de análisis configurable desde `/dreams` (daily/3d/7d/15d)
@@ -83,19 +104,34 @@ Para apagarlo o pausar mensajes: ver `/agent` → pestaña Agente → interrupto
 - **`/inbox`**: cards de header compactas; pestañas "Agente"/"Resto"; filtro
   y badge "Transferido a humano" (se marca cuando el agente mueve el lead a
   una etapa pausada — `leads.transferred_to_human_at/_stage`).
-- **`/analitica`** (nuevo): funnel completo — leads entrando a Kommo,
-  atendidos por el agente, transferidos a humano, conversión a "Ganado",
-  desglose por vertical, temas más preguntados, canales. Fuente:
-  `analytics_overview(p_since)` (función SQL).
+- **`/analitica`**: funnel completo — leads entrando a Kommo, atendidos por el
+  agente, transferidos a humano, conversión a "Ganado", desglose por vertical,
+  temas más preguntados, canales. Fuente: `analytics_overview(p_since)`.
+  El canal sale de `leads.channel` y, si está vacío, del `source` del primer
+  mensaje; los leads sin conversación (importados de Zoho) **se excluyen** del
+  gráfico en vez de caer en un cajón "Otro" que llegó a ser el 79%. "Temas más
+  preguntados" cuenta solo mensajes clasificados con contenido real; lo que
+  queda fuera se reporta aparte (`mensajes_sin_clasificar`,
+  `fallos_clasificador`, `mensajes_ignorados`, `mensajes_sin_contenido`) en
+  vez de esconderse como "(sin clasificar)".
 - **Pipeline Zoho → Kommo: automatizado 100% con `pg_cron` de Supabase**
   (ya NO por GitHub Actions — el cron de `.github/workflows/sync.yml` quedó
   solo con `workflow_dispatch`, sin schedule). Dos jobs:
   `zoho-sync-incremental` (Zoho Desk → Supabase, luego push a Kommo) y
-  `zoho-kommo-push-safety` (red de seguridad independiente). Filtro de
-  Asesor B2C corregido (faltaba el valor "Seguros Venezuela" como "sin
-  asesor" — 181 leads quedaban sin migrar). Flujo inverso B2B: leads
-  restantes (corredores reales) migran a `Ventas B2B` → etapa "DATA ZOHO
-  DESK".
+  `zoho-kommo-push-safety` (red de seguridad independiente). Flujo inverso
+  B2B: leads restantes (corredores reales) migran a `Ventas B2B` → etapa
+  "DATA ZOHO DESK".
+- **`/pipeline` tiene dos pestañas**: "Embudo Zoho" (la vista de siempre) y
+  **"B2C / B2B por corredor"**, que responde a dónde va cada ticket. En Zoho
+  entran mezcladas dos cosas: un cliente final pidiendo cotización (va al
+  agente, B2C) y un corredor tramitando a SUS clientes (va a B2B). La segunda
+  se lee por intermediario: tabla de corredores ordenable por cualquier
+  columna, paginada (100/500/1000), y al desplegar uno se ven sus clientes con
+  todas sus cotizaciones, con botón de expandir/colapsar todo. Fuente:
+  `zoho_pipeline_overview()` y `zoho_corredor_detalle()` (migraciones 0064 y
+  0065). Tras enriquecer 9.998 tickets con el campo Asesor que faltaba:
+  **B2C 2.512 · B2B 11.568 · sin atribución 111** (99,2% clasificado),
+  1.110 corredores y 8.214 clientes finales.
 - **Bug de FK ambigua (`drafts`↔`messages`) corregido**: `publish-to-kommo`,
   `evaluate-outcomes` y `alerts-scan` tiraban 500 en cron por tener dos FKs
   entre esas tablas; se resolvió con el hint explícito
@@ -104,7 +140,9 @@ Para apagarlo o pausar mensajes: ver `/agent` → pestaña Agente → interrupto
 ## PENDIENTE
 
 1. Cargar documentos reales de KB en cada vertical (tarifarios, condiciones,
-   FAQs) — hoy la mayoría sigue sin ninguno.
+   FAQs) — hoy la mayoría sigue sin ninguno. **Volver a subir "Flyer RCV" y
+   "Flyer marcotas"**: se cargaron antes del validador y su texto quedó
+   corrupto; los originales ya no están en disco.
 2. Borrar a mano en Kommo los leads etiquetados `duplicado` (la API no
    permite `DELETE /leads`, ver trampa #2).
 3. Restringir la hoja de Google de Meta Ads (hoy `anyone: commenter`, expone
@@ -112,6 +150,9 @@ Para apagarlo o pausar mensajes: ver `/agent` → pestaña Agente → interrupto
    servicio y apuntar `META_SHEET_CSV_URL`.
 4. Decidir qué hacer con los leads `revisar-asesor` (etiqueta en Kommo).
 5. Definir topes de consumo reales en `/consumo` (hoy sin tope puesto).
+6. Limpiar en Zoho los 111 tickets con `Asesor` vacío (no se puede saber desde
+   acá si son de corredor o de cliente final) y los nombres de corredor
+   escritos de varias formas, que hoy se cuentan como corredores distintos.
 
 ### Vencimientos
 
@@ -156,9 +197,12 @@ completo** cada vez.
 Clave: `asunto + contacto + titular` (`ticket_dedup_key()`).
 
 **Filtro de Asesor B2C:** migran a `Ventas B2C` solo tickets con `Asesor` =
-"No tengo"/"Sin Asesor"/"Sin Asesor (KG)"/"Seguros Venezuela" (`ilike`,
-tolerante). **Filtro B2B (inverso):** el resto (asesor con nombre real, es
-decir corredores) migra a `Ventas B2B` → etapa "DATA ZOHO DESK".
+"No tengo"/"Sin Asesor"/"Sin Asesor (KG)"/"Seguros Venezuela"/"Directo
+Caracas"/"No Posee" (`ilike`, tolerante). **Filtro B2B (inverso):** el resto
+(asesor con nombre real, es decir corredores) migra a `Ventas B2B` → etapa
+"DATA ZOHO DESK". La misma regla vive en SQL como `zoho_destino(asesor)`, que
+es lo que usa la vista `/pipeline` para no desincronizarse de lo que de verdad
+se migra.
 
 ---
 
@@ -203,34 +247,57 @@ espacio). Aprovisionar/actualizar el Managed Agent de Anthropic: `node
    etiquetar y borrar desde la interfaz.
 3. **`filter[tags][0][name]` de Kommo no filtra fiable** — filtrar por
    `filter[id][]=` o llevar el inventario en Supabase.
-4. **Cédulas placeholder** (`C.I: V-00000000`) repetidas entre personas
-   distintas → la clave de dedupe incluye `titular`.
-5. **Teléfonos en formatos mezclados** → todo pasa por `lib/telefono.mjs`;
+4. **Cédulas placeholder** (`C.I: V-00000000`, `12345678`, `124578963`)
+   repetidas entre personas distintas → **toda identidad de cliente lleva
+   `titular`**, nunca la cédula sola: `ticket_dedup_key()` para el dedupe y
+   `zoho_cliente_key()` para la vista. Medido: la cédula `12345678` sola
+   fusionaba 153 personas en un "cliente" con 241 cotizaciones.
+5. **PostgREST corta en 1000 filas y no avisa**: ignora en silencio un
+   `?limit=` mayor. Un "enriquecer 12.000" procesó 998 y dijo "listo". Para
+   más de 1000 hay que paginar con cabeceras `Range`.
+6. **El endpoint de *tokens* de Zoho es mucho más estricto que la API de
+   Desk**: varios workers refrescando a la vez disparan "too many requests" y
+   bloquean todo un rato — sin error visible, porque falla al pedir el token,
+   no el ticket. `sync/lib/zoho.mjs` comparte un solo refresco en vuelo y
+   espera creciente.
+7. **Teléfonos en formatos mezclados** → todo pasa por `lib/telefono.mjs`;
    lo que no encaja en un patrón venezolano se deja crudo a propósito.
-6. **El `id` de Meta (`l:...`) es la mejor clave de idempotencia.**
+8. **El `id` de Meta (`l:...`) es la mejor clave de idempotencia.**
 
 **Agente de IA:**
-7. `process-inbound` **NO lee el body del POST**: procesa `inbound_queue`
+9. `process-inbound` **NO lee el body del POST**: procesa `inbound_queue`
    (encolado por `kommo-webhook`). Para simular un mensaje hay que insertar
    en `inbound_queue` y luego invocar `process-inbound`.
-8. Migraciones con `net.http_post(url := '${SUPABASE_URL}/...')`: sustituir
-   `${SUPABASE_URL}` por la URL real al aplicar a mano contra este proyecto.
-9. `pg_cron` no tiene "cada N días desde una fecha ancla": se aproxima con
-   `*/N` en día-del-mes; `DREAMS_LAST_RUN` compensa el hueco real.
-10. El kill switch `agent_enabled` debe chequearse en **ambas**
+10. Migraciones con `net.http_post(url := '${SUPABASE_URL}/...')`: sustituir
+    `${SUPABASE_URL}` por la URL real al aplicar a mano contra este proyecto.
+11. `pg_cron` no tiene "cada N días desde una fecha ancla": se aproxima con
+    `*/N` en día-del-mes; `DREAMS_LAST_RUN` compensa el hueco real.
+12. El kill switch `agent_enabled` debe chequearse en **ambas**
     `process-inbound` (clasificación) y `generate-response` (respuesta) — si
     solo se chequea en una, la otra sigue gastando con el agente "apagado".
-11. **Cualquier emoji rompe un campo de texto de Kommo** (PATCH), no solo los
+13. **Cualquier emoji rompe un campo de texto de Kommo** (PATCH), no solo los
     compuestos — probado en vivo (un 👋 truncó el mensaje). No confiar en
     "los simples son seguros".
-12. **`EdgeRuntime.waitUntil()` para encadenar Edge Functions no es
+14. **`EdgeRuntime.waitUntil()` para encadenar Edge Functions no es
     confiable** (probado: la función encadenada nunca se disparó en cron
     real). Preferir crons independientes de `pg_cron`, cada uno con su propia
     red de seguridad.
-13. **Los `dreams` consolidados en `DREAMS_DIGEST` son rolling**: borrar los
+15. **Los `dreams` consolidados en `DREAMS_DIGEST` son rolling**: borrar los
     archivos fuente NO borra lo ya consolidado en el digest. Una corrección
     dura (ej: un aprendizaje incorrecto) requiere editar el digest
     directamente, no solo borrar dreams.
+16. **Renombrar una etapa en Kommo rompe el código en silencio.** Pasó de
+    verdad: "cliente por atender" → "cliente por atender (atender)" y
+    "AGENTE" → "AGENTE (no atender)" tumbaron todo el push B2C de Zoho y
+    `mover_etapa` sin un solo error visible. Nunca comparar nombres de etapa
+    con `===`: usar `matchStagesByName()` (`supabase/functions/_shared/
+    kommo.ts`), que va de literal → normalizado → prefijo → contiene. El
+    escalón literal importa: CONFIGURACIONES tiene dos etapas que solo se
+    distinguen por acentos/mayúsculas ("Apertura de códigos" / "APERTURA DE
+    CODIGOS").
+17. **Kommo exige `loss_reason_id` junto con `status_id`** en el mismo PATCH
+    para marcar Perdido; mandarlo solo da 400. Los estados 142 (Ganado) y 143
+    (Perdido) son globales, compartidos por todos los embudos.
 
 ---
 
@@ -261,3 +328,16 @@ espacio). Aprovisionar/actualizar el Managed Agent de Anthropic: `node
   personales (tras un caso real corregido), y trazabilidad completa del
   timeline de `/inbox` (cambios de etapa hechos a mano en Kommo + imágenes
   enviadas por el agente ahora visibles en la conversación).
+- **2026-08-26 → 2026-08-29**: endurecido lo que ya estaba en vivo. El agente
+  aprendió a mandar a Perdido (`marcar_perdido`) y a hablar más concreto; se
+  arregló que un lead volviera a una etapa activa y siguiera mudo (auto-sanado
+  de etapa) y que un draft fallido se perdiera para siempre (reintentos +
+  `agent_metadata` fusionado). Se descubrió que un rename de etapa en Kommo
+  había tumbado el push B2C y `mover_etapa` en silencio → `matchStagesByName`.
+  Validador de KB con visión (nada malo entra a una vertical). `/analitica`
+  corregida: los canales ya no caen en "Otro" y los "sin clasificar" se
+  reportan aparte. 9.998 tickets enriquecidos desde Zoho (destapó el tope de
+  1000 filas de PostgREST y el bloqueo del endpoint de tokens de Zoho), y con
+  esa data el módulo `/pipeline` ganó la vista B2C/B2B por corredor:
+  tabla ordenable y paginada, cliente → sus cotizaciones, identidad de cliente
+  corregida a cédula + titular.
