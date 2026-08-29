@@ -121,8 +121,9 @@ Para apagarlo o pausar mensajes: ver `/agent` → pestaña Agente → interrupto
   `zoho-kommo-push-safety` (red de seguridad independiente). Flujo inverso
   B2B: leads restantes (corredores reales) migran a `Ventas B2B` → etapa
   "DATA ZOHO DESK".
-- **`/pipeline` tiene dos pestañas**: "Embudo Zoho" (la vista de siempre) y
-  **"B2C / B2B por corredor"**, que responde a dónde va cada ticket. En Zoho
+- **`/pipeline` tiene dos pestañas**: **"B2C / B2B por corredor"** (la que
+  abre por defecto, en `/pipeline`) y "Embudo Zoho" (la de siempre, ahora en
+  `/pipeline?vista=embudo`). La primera responde a dónde va cada ticket. En Zoho
   entran mezcladas dos cosas: un cliente final pidiendo cotización (va al
   agente, B2C) y un corredor tramitando a SUS clientes (va a B2B). La segunda
   se lee por intermediario: tabla de corredores ordenable por cualquier

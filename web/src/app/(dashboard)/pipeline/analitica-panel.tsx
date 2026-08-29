@@ -82,51 +82,58 @@ export function PanelAnalitica({ since, children }: { since: string | null; chil
   }, [abierto]);
 
   return (
-    <div className="flex gap-5">
-      <div className={"min-w-0 flex-1 " + (abierto ? "[&_[data-stat-row]]:lg:grid-cols-2" : "")}>
-        <div className="mb-4 flex justify-end">
-          <button
-            type="button"
-            onClick={() => setAbierto((a) => !a)}
-            className={
-              "inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors " +
-              (abierto
-                ? "border-neutral-900 bg-neutral-900 text-white"
-                : "border-neutral-300 bg-white text-neutral-700 hover:bg-neutral-50")
-            }
-          >
-            <IconoBarras />
-            Analítica
-          </button>
-        </div>
-        {children}
+    <div>
+      <div className="mb-4 flex justify-end">
+        <button
+          type="button"
+          onClick={() => setAbierto((a) => !a)}
+          className={
+            "inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors " +
+            (abierto
+              ? "border-neutral-900 bg-neutral-900 text-white"
+              : "border-neutral-300 bg-white text-neutral-700 hover:bg-neutral-50")
+          }
+        >
+          <IconoBarras />
+          Analítica
+        </button>
       </div>
 
-      {abierto && (
-        <aside className="w-full shrink-0 lg:w-1/2 xl:w-[46%]">
-          <div className="sticky top-4 max-h-[calc(100vh-2rem)] space-y-5 overflow-y-auto rounded-xl border border-neutral-200 bg-white p-4 shadow-card">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold tracking-tight text-neutral-900">
-                Analítica del pipeline
-              </h3>
-              <button
-                type="button"
-                onClick={() => setAbierto(false)}
-                className="rounded-lg px-2 py-1 text-xs text-neutral-500 transition-colors hover:bg-neutral-100"
-                title="Cerrar (Esc)"
-              >
-                ✕
-              </button>
-            </div>
+      {/* En móvil no hay "mitad" que valga: el panel se apila arriba del
+          contenido (queda justo debajo del botón, visible al abrirlo) y fluye
+          con la página. Recién en lg se pone al lado, fijo y con scroll
+          propio. */}
+      <div className="flex flex-col gap-5 lg:flex-row">
+        {abierto && (
+          <aside className="w-full lg:order-2 lg:w-1/2 lg:shrink-0 xl:w-[46%]">
+            <div className="space-y-5 rounded-xl border border-neutral-200 bg-white p-4 shadow-card lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold tracking-tight text-neutral-900">
+                  Analítica del pipeline
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => setAbierto(false)}
+                  className="rounded-lg px-2 py-1 text-xs text-neutral-500 transition-colors hover:bg-neutral-100"
+                  title="Cerrar (Esc)"
+                >
+                  ✕
+                </button>
+              </div>
 
-            {cargando && <p className="py-6 text-center text-xs text-neutral-400">Calculando…</p>}
-            {error && (
-              <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">⚠ {error}</p>
-            )}
-            {datos && <Contenido a={datos} />}
-          </div>
-        </aside>
-      )}
+              {cargando && <p className="py-6 text-center text-xs text-neutral-400">Calculando…</p>}
+              {error && (
+                <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">⚠ {error}</p>
+              )}
+              {datos && <Contenido a={datos} />}
+            </div>
+          </aside>
+        )}
+
+        <div className={"min-w-0 flex-1 lg:order-1 " + (abierto ? "[&_[data-stat-row]]:lg:grid-cols-2" : "")}>
+          {children}
+        </div>
+      </div>
     </div>
   );
 }
@@ -518,7 +525,11 @@ function Lista({
               style={{ width: `${Math.max((f.valor / max) * 100, 1)}%`, background: C_B2B }}
             />
           </div>
-          {f.extra && <span className="w-20 shrink-0 text-right text-[10px] text-neutral-400">{f.extra}</span>}
+          {/* En pantallas angostas el dato secundario se come el ancho de la
+              barra; se oculta antes que dejar la barra ilegible. */}
+          {f.extra && (
+            <span className="hidden w-20 shrink-0 text-right text-[10px] text-neutral-400 sm:block">{f.extra}</span>
+          )}
           <div className="w-14 shrink-0 text-right text-[11px] font-medium tabular-nums text-neutral-700">
             {formato(f.valor)}
           </div>

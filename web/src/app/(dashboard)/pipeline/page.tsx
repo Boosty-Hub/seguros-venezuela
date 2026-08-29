@@ -40,7 +40,9 @@ function Bar({ value, max, color }: { value: number; max: number; color?: string
 
 export default async function PipelinePage({ searchParams }: { searchParams: SearchParams }) {
   const supabase = createSupabaseServerClient();
-  const vista = searchParams.vista === "destinos" ? "destinos" : "";
+  // La vista por defecto es B2C/B2B. `?vista=destinos` sigue funcionando para
+  // no romper links viejos: cualquier cosa que no sea "embudo" cae ahí.
+  const vista = searchParams.vista === "embudo" ? "embudo" : "destinos";
 
   const [{ data: stagesData }, { data: kpisData }, { data: funnelData }, { data: channelData }, { data: agentData }] =
     await Promise.all([
@@ -118,8 +120,10 @@ export default async function PipelinePage({ searchParams }: { searchParams: Sea
 
   const channelOptions = Array.from(new Set(channels.map((r) => r.channel).filter(Boolean))) as string[];
 
+  // Los filtros del embudo tienen que arrastrar `vista=embudo`: sin eso,
+  // filtrar te devolvía a la pestaña por defecto (B2C/B2B).
   function pageHref(patch: Record<string, string>) {
-    const params = new URLSearchParams({ q, status: fStatus, channel: fChannel, page: String(page) });
+    const params = new URLSearchParams({ vista: "embudo", q, status: fStatus, channel: fChannel, page: String(page) });
     for (const [k, v] of Object.entries(patch)) {
       if (v) params.set(k, v);
       else params.delete(k);
@@ -132,16 +136,16 @@ export default async function PipelinePage({ searchParams }: { searchParams: Sea
   }
 
   const tabs = (
-    <div className="flex gap-1 rounded-lg border border-neutral-200 bg-white p-0.5">
+    <div className="flex gap-1 overflow-x-auto rounded-lg border border-neutral-200 bg-white p-0.5">
       {[
-        { v: "", label: "Embudo Zoho" },
         { v: "destinos", label: "B2C / B2B por corredor" },
+        { v: "embudo", label: "Embudo Zoho" },
       ].map((t) => (
         <Link
-          key={t.v || "embudo"}
-          href={t.v ? `/pipeline?vista=${t.v}` : "/pipeline"}
+          key={t.v}
+          href={t.v === "destinos" ? "/pipeline" : `/pipeline?vista=${t.v}`}
           className={
-            "rounded-md px-3 py-1.5 text-xs font-medium transition-colors " +
+            "shrink-0 rounded-md px-3 py-1.5 text-xs font-medium transition-colors " +
             (vista === t.v ? "bg-neutral-900 text-white" : "text-neutral-600 hover:bg-neutral-50")
           }
         >
