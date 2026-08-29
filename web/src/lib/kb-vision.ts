@@ -41,6 +41,13 @@ export type VisionResult =
   | { ok: true; text: string }
   | { ok: false; reason: string };
 
+// Presupuesto de salida. Arranca alto porque un folleto de 60 páginas no entra
+// en 8k tokens, y si se pasa la transcripción se corta A LA MITAD sin avisar
+// (comprobado: la API devuelve stop_reason="max_tokens" y el texto queda
+// truncado en media frase). El reintento sube al techo del modelo.
+const MAX_TOKENS_FIRST = 16000;
+const MAX_TOKENS_RETRY = 64000;
+
 /**
  * ¿El texto extraído está ilegible por culpa del PDF?
  *
@@ -88,65 +95,80 @@ export async function transcribePdfWithVision(
     };
   }
 
-  let res: Response;
-  try {
-    res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key": opts.apiKey,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model: opts.model,
-        max_tokens: 8000,
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: isPdf ? "document" : "image",
-                source: {
-                  type: "base64",
-                  media_type: mediaType,
-                  data: Buffer.from(buffer).toString("base64"),
+  const attempt = async (maxTokens: number) => {
+    let res: Response;
+    try {
+      res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "x-api-key": opts.apiKey,
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: opts.model,
+          max_tokens: maxTokens,
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: isPdf ? "document" : "image",
+                  source: {
+                    type: "base64",
+                    media_type: mediaType,
+                    data: Buffer.from(buffer).toString("base64"),
+                  },
                 },
-              },
-              { type: "text", text: PROMPT },
-            ],
-          },
-        ],
-      }),
+                { type: "text", text: PROMPT },
+              ],
+            },
+          ],
+        }),
+      });
+    } catch (err) {
+      return { error: `no se pudo contactar el servicio de lectura: ${err instanceof Error ? err.message : String(err)}` };
+    }
+    if (!res.ok) {
+      const detail = (await res.text().catch(() => "")).slice(0, 200);
+      return { error: `el servicio de lectura respondió ${res.status}: ${detail}` };
+    }
+    const json = (await res.json()) as {
+      content?: Array<{ type: string; text?: string }>;
+      stop_reason?: string;
+      usage?: { input_tokens?: number; output_tokens?: number };
+    };
+    // fail-open: el consumo es contabilidad, no puede tumbar la ingesta.
+    await recordWebUsage({
+      component: "kb_ocr",
+      model: opts.model,
+      usage: {
+        promptTokens: json.usage?.input_tokens,
+        completionTokens: json.usage?.output_tokens,
+      },
+      metadata: { filename: opts.filename ?? null, bytes: buffer.byteLength, max_tokens: maxTokens },
     });
-  } catch (err) {
-    return { ok: false, reason: `no se pudo contactar el servicio de lectura: ${err instanceof Error ? err.message : String(err)}` };
-  }
-
-  if (!res.ok) {
-    const detail = (await res.text().catch(() => "")).slice(0, 200);
-    return { ok: false, reason: `el servicio de lectura respondió ${res.status}: ${detail}` };
-  }
-
-  const json = (await res.json()) as {
-    content?: Array<{ type: string; text?: string }>;
-    usage?: { input_tokens?: number; output_tokens?: number };
+    return {
+      text: (json.content ?? []).filter((c) => c.type === "text").map((c) => c.text ?? "").join("").trim(),
+      truncated: json.stop_reason === "max_tokens",
+    };
   };
-  const text = (json.content ?? [])
-    .filter((c) => c.type === "text")
-    .map((c) => c.text ?? "")
-    .join("")
-    .trim();
 
-  // fail-open: el consumo es contabilidad, no puede tumbar la ingesta.
-  await recordWebUsage({
-    component: "kb_ocr",
-    model: opts.model,
-    usage: {
-      promptTokens: json.usage?.input_tokens,
-      completionTokens: json.usage?.output_tokens,
-    },
-    metadata: { filename: opts.filename ?? null, bytes: buffer.byteLength },
-  });
+  let out = await attempt(MAX_TOKENS_FIRST);
+  // Reproceso por truncado: el documento no entró en el presupuesto y el texto
+  // quedó cortado a la mitad. Se reintenta una vez con el techo del modelo.
+  if (!("error" in out) && out.truncated) {
+    const retry = await attempt(MAX_TOKENS_RETRY);
+    if (!("error" in retry)) out = retry;
+  }
+  if ("error" in out) return { ok: false, reason: out.error! };
+  if (out.truncated) {
+    return {
+      ok: false,
+      reason: "el documento es demasiado largo y la transcripción quedó incompleta; divídelo en partes más chicas",
+    };
+  }
+  const text = out.text!;
 
   if (!text || text.includes("SIN_TEXTO_LEGIBLE")) {
     return { ok: false, reason: "el documento no tiene texto legible" };

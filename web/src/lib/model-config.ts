@@ -19,6 +19,10 @@ export const MODEL_KEYS: Record<string, string> = {
   GRADER_MODEL: "claude-haiku-4-5",
   DREAMS_MODEL: "claude-haiku-4-5",
   KB_OCR_MODEL: "claude-haiku-4-5",
+  // Sonnet a propósito: Haiku como juez dejó pasar una sección ENTERA faltante
+  // en pruebas reales. Este modelo también hace el reproceso cuando el primer
+  // intento no pasa la verificación.
+  KB_JUDGE_MODEL: "claude-sonnet-4-6",
 };
 
 // Descripción humana de qué gobierna cada key (para el panel de /consumo).
@@ -46,5 +50,9 @@ export const MODEL_KEY_INFO: Record<string, { label: string; detail: string }> =
   KB_OCR_MODEL: {
     label: "Lectura de PDFs sin texto",
     detail: "Transcribe flyers y folletos que son solo imagen al subirlos a la base de conocimiento. Corre una única vez por documento, y solo si el PDF no trae texto seleccionable.",
+  },
+  KB_JUDGE_MODEL: {
+    label: "Validación de documentos de KB",
+    detail: "Verifica que lo transcrito coincida con el documento (cifras, secciones, nada inventado) y que corresponda a la vertical, antes de que entre a la base de conocimiento. Si no pasa, vuelve a leer el documento con este mismo modelo. Conviene dejarlo en el más capaz: uno más barato deja pasar secciones faltantes.",
   },
 };
