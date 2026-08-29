@@ -19,6 +19,7 @@ export default function InboxFilters({
   searchPlaceholder = "Buscar nombre o mensaje…",
   collapsible = false,
   inline = false,
+  favoritosCount,
 }: {
   channels: string[];
   verticals: string[];
@@ -26,6 +27,8 @@ export default function InboxFilters({
   collapsible?: boolean;
   /** Todos los filtros en una sola fila horizontal a lo ancho (inbox). */
   inline?: boolean;
+  /** Cuántas conversaciones hay marcadas como favoritas (sin otros filtros). */
+  favoritosCount?: number;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -67,7 +70,8 @@ export default function InboxFilters({
     (sp.get("estado") ? 1 : 0) +
     (sp.get("rango") ? 1 : 0) +
     (sp.get("sort") && sp.get("sort") !== "recent" ? 1 : 0) +
-    (sp.get("urgent") === "1" ? 1 : 0);
+    (sp.get("urgent") === "1" ? 1 : 0) +
+    (sp.get("fav") === "1" ? 1 : 0);
   const active = activeCount > 0;
 
   const selectCls =
@@ -165,6 +169,42 @@ export default function InboxFilters({
         }
       >
         Solo urgentes
+      </button>
+
+      <button
+        type="button"
+        onClick={() => apply("fav", sp.get("fav") === "1" ? "" : "1")}
+        title="Las favoritas se muestran de las dos pestañas, Agente y Resto"
+        className={
+          "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors " +
+          (sp.get("fav") === "1"
+            ? "border-amber-300 bg-amber-50 text-amber-700"
+            : "border-neutral-300 bg-white text-neutral-600 hover:bg-neutral-50")
+        }
+      >
+        <svg
+          width="13"
+          height="13"
+          viewBox="0 0 24 24"
+          fill={sp.get("fav") === "1" ? "currentColor" : "none"}
+          stroke="currentColor"
+          strokeWidth={sp.get("fav") === "1" ? 0 : 2}
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <path d="M12 2.5l2.9 5.88 6.49.95-4.7 4.58 1.11 6.46L12 17.33l-5.8 3.05 1.1-6.46-4.69-4.58 6.49-.95L12 2.5z" />
+        </svg>
+        Favoritas
+        {favoritosCount != null && favoritosCount > 0 && (
+          <span
+            className={
+              "rounded-full px-1.5 text-[10px] font-semibold " +
+              (sp.get("fav") === "1" ? "bg-amber-200 text-amber-800" : "bg-neutral-100 text-neutral-500")
+            }
+          >
+            {favoritosCount}
+          </span>
+        )}
       </button>
 
       {active && (

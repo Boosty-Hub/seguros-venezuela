@@ -12,6 +12,7 @@ import { fetchPipelines, fetchLeadStage } from "@/lib/kommo";
 import { configValue } from "@/lib/runtime-config";
 import { KommoLeadLink } from "./kommo-lead-link";
 import { computeAgentStatus, AgentStatusBadge, type AgentStatus } from "./agent-status";
+import FavoriteStar from "./favorite-star";
 
 export const dynamic = "force-dynamic";
 
@@ -25,6 +26,7 @@ type SearchParams = {
   rango?: string;
   sort?: string;
   vista?: string;
+  fav?: string;
 };
 
 function withinRange(iso: string | null, rango: string): boolean {
@@ -83,7 +85,7 @@ export default async function InboxPage({
   const { data: leads } = await supabase
     .from("leads")
     .select(
-      "id, display_name, channel, kommo_lead_id, kommo_stage_id, last_message_at, transferred_to_human_at, transferred_to_human_stage, messages!inner(id, content, direction, requires_human_review, created_at, classification, verticals(slug))"
+      "id, display_name, channel, kommo_lead_id, kommo_stage_id, last_message_at, transferred_to_human_at, transferred_to_human_stage, favorited_at, messages!inner(id, content, direction, requires_human_review, created_at, classification, verticals(slug))"
     )
     .order("last_message_at", { ascending: false, nullsFirst: false })
     .limit(500);
@@ -98,6 +100,7 @@ export default async function InboxPage({
     last_message_at: string | null;
     transferredToHumanAt: string | null;
     transferredToHumanStage: string | null;
+    favorito: boolean;
     lastMsg: { content: string; direction: string; vertical: string | null; requires_review: boolean; created_at: string } | null;
     hasReviewPending: boolean;
     verticals: string[];
@@ -140,6 +143,7 @@ export default async function InboxPage({
       last_message_at: l.last_message_at,
       transferredToHumanAt: (l as unknown as { transferred_to_human_at?: string | null }).transferred_to_human_at ?? null,
       transferredToHumanStage: (l as unknown as { transferred_to_human_stage?: string | null }).transferred_to_human_stage ?? null,
+      favorito: !!(l as unknown as { favorited_at?: string | null }).favorited_at,
       atendidoPorAgente: stageId == null || !ignoredStageIdsList.includes(stageId),
       lastMsg: last
         ? {
@@ -174,14 +178,21 @@ export default async function InboxPage({
   const fUrgent = searchParams.urgent === "1";
   const fRango = searchParams.rango ?? "";
   const fSort = searchParams.sort ?? "recent";
+  const fFav = searchParams.fav === "1";
   // Pestaña Agente/Resto — default "agente" (lo que el usuario quiere ver
   // primero: qué está atendiendo el agente ahora mismo).
   const fVista = searchParams.vista === "resto" ? "resto" : "agente";
 
   const leadRows = allLeadRows
     .filter((l) => {
-      if (fVista === "agente" && !l.atendidoPorAgente) return false;
-      if (fVista === "resto" && l.atendidoPorAgente) return false;
+      if (fFav && !l.favorito) return false;
+      // Las favoritas cruzan las pestañas a propósito: si marcaste una que
+      // ahora la lleva un humano, filtrar por favoritas desde "Agente" tiene
+      // que mostrarla igual. Si no, la estrella parecería haberse perdido.
+      if (!fFav) {
+        if (fVista === "agente" && !l.atendidoPorAgente) return false;
+        if (fVista === "resto" && l.atendidoPorAgente) return false;
+      }
       if (fQ) {
         const hay = `${l.display_name ?? ""} ${l.kommo_lead_id ?? ""} ${l.lastMsg?.content ?? ""}`.toLowerCase();
         if (!hay.includes(fQ)) return false;
@@ -213,6 +224,7 @@ export default async function InboxPage({
     !!fVertical ||
     !!fEstado ||
     fUrgent ||
+    fFav ||
     !!fRango ||
     fSort !== "recent";
 
@@ -223,6 +235,7 @@ export default async function InboxPage({
   if (fVertical) filterParams.set("vertical", fVertical);
   if (fEstado) filterParams.set("estado", fEstado);
   if (fUrgent) filterParams.set("urgent", "1");
+  if (fFav) filterParams.set("fav", "1");
   if (fRango) filterParams.set("rango", fRango);
   if (fSort !== "recent") filterParams.set("sort", fSort);
   if (fVista !== "agente") filterParams.set("vista", fVista);
@@ -232,6 +245,8 @@ export default async function InboxPage({
   // así la pestaña siempre muestra cuántos hay en total en cada lado).
   const agenteCount = allLeadRows.filter((l) => l.atendidoPorAgente).length;
   const restoCount = allLeadRows.length - agenteCount;
+  // Favoritas de las dos pestañas juntas: es como filtra el botón.
+  const favoritosCount = allLeadRows.filter((l) => l.favorito).length;
   // Querystring para cambiar de pestaña preservando el resto de los filtros.
   function vistaHref(vista: "agente" | "resto"): string {
     const p = new URLSearchParams(filterParams);
@@ -479,6 +494,7 @@ export default async function InboxPage({
             <InboxFilters
               channels={channelOptions}
               verticals={verticalOptions}
+              favoritosCount={favoritosCount}
               inline
             />
           </div>
@@ -508,13 +524,16 @@ export default async function InboxPage({
                   const name = l.display_name ?? `Lead ${l.kommo_lead_id ?? "?"}`;
                   const active = selectedLead === l.id;
                   return (
-                    <li key={l.id}>
+                    <li
+                      key={l.id}
+                      className={
+                        "flex items-center gap-1 pr-2 transition-colors " +
+                        (active ? "bg-brand-soft" : "hover:bg-neutral-50")
+                      }
+                    >
                       <Link
                         href={`/inbox?lead=${l.id}${filterQS ? `&${filterQS}` : ""}`}
-                        className={
-                          "block px-3 py-2 transition-colors " +
-                          (active ? "bg-brand-soft" : "hover:bg-neutral-50")
-                        }
+                        className="block min-w-0 flex-1 px-3 py-2"
                       >
                         <div className="flex items-center gap-2.5">
                           <div className={
@@ -556,6 +575,7 @@ export default async function InboxPage({
                           </div>
                         </div>
                       </Link>
+                      <FavoriteStar leadId={l.id} favorito={l.favorito} />
                     </li>
                   );
                 })}

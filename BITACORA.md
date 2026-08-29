@@ -69,6 +69,10 @@ Para apagarlo: `/agent` → "Agente activo" (para todo) o "Publicar en Kommo"
   sola línea de tiempo con mensajes + cambios de etapa (`lead_stage_events`,
   incluidos los hechos a mano en Kommo) + imágenes enviadas por el agente. Un
   cambio de etapa sin mensaje no toca `last_message_at` (no reordena el inbox).
+  **Favoritas**: estrella por conversación (`leads.favorited_at`, migración
+  0068) y botón de filtro con contador. La marca es **del equipo, no por
+  usuario**, y el filtro cruza las dos pestañas: si marcas una que después pasa
+  a un humano, sigue apareciendo.
 - **`/analitica`**: funnel del agente vía `analytics_overview(p_since)`. El
   canal sale de `leads.channel` y si está vacío del `source` del primer
   mensaje; los leads sin conversación **se excluyen** en vez de caer en un
