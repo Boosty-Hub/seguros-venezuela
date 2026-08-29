@@ -73,7 +73,11 @@ export async function DestinosView({ since }: { since: string | null }) {
           <StatCard
             label="Sin atribución"
             value={ov.sin_atribucion_tickets}
-            hint={ov.sin_atribucion_tickets > 0 ? "les falta el campo Asesor" : "todo clasificado"}
+            hint={
+              ov.sin_atribucion_tickets > 0
+                ? "Asesor vacío en Zoho"
+                : "todo clasificado"
+            }
             tone={ov.sin_atribucion_tickets > 0 ? "amber" : "emerald"}
           />
         </StatRow>
@@ -85,8 +89,9 @@ export async function DestinosView({ since }: { since: string | null }) {
           {ov.sin_atribucion_tickets > 0 && (
             <>
               {" "}
-              Los <span className="font-medium text-amber-700">{ov.sin_atribucion_tickets} sin atribución</span> son
-              tickets a los que nunca se les trajo ese campo desde Zoho: no se pueden clasificar hasta enriquecerlos.
+              Los <span className="font-medium text-amber-700">{ov.sin_atribucion_tickets} sin atribución</span> tienen
+              ese campo vacío en el propio Zoho, así que no hay forma de saber si vienen de un corredor o de un cliente
+              final — se completan al llenarlo allá.
             </>
           )}
         </p>
