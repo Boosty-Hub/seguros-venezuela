@@ -7,6 +7,7 @@ import ExportImportButtons from "./export-import";
 import PendingDreamActions from "./pending-actions";
 import PolicySelector from "./policy-selector";
 import FrequencySelector from "./frequency-selector";
+import { TablaDreams } from "./tabla";
 
 export const dynamic = "force-dynamic";
 
@@ -303,42 +304,7 @@ export default async function DreamsPage({ searchParams }: { searchParams: Searc
             description="Una vez que haya conversaciones, los análisis corren automáticamente cada noche y cada semana."
           />
         ) : (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {parsedItems.map((d) => (
-              <div
-                key={d.id}
-                className="group rounded-xl border border-neutral-200 bg-white p-4 shadow-card hover:shadow-pop hover:-translate-y-0.5 transition-all duration-200"
-              >
-                <div className="flex items-start justify-between gap-2 mb-2">
-                  <div className="flex flex-wrap gap-1">
-                    {d.sev && (
-                      <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${SEVERITY[d.sev].cls}`}>
-                        {SEVERITY[d.sev].label}
-                      </span>
-                    )}
-                    {d.period && (
-                      <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium bg-neutral-100 text-neutral-600">
-                        {d.period}
-                      </span>
-                    )}
-                  </div>
-                  <span className="shrink-0 text-xs text-neutral-400">{d.date}</span>
-                </div>
-                <p className="text-sm font-medium text-neutral-900 leading-snug line-clamp-2 capitalize">
-                  {d.title}
-                </p>
-                <div className="mt-3 flex items-center justify-end gap-3">
-                  <a
-                    href={`/dreams?open=${d.id}`}
-                    className="text-xs font-medium text-brand hover:text-brand-strong transition-colors"
-                  >
-                    Ver →
-                  </a>
-                  <DeleteDreamButton id={d.id} />
-                </div>
-              </div>
-            ))}
-          </div>
+          <TablaDreams dreams={parsedItems} />
         )}
       </section>
       )}
