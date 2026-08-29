@@ -7,10 +7,15 @@ import Script from "next/script";
 // cada una oculta con CSS `hidden`/`lg:hidden` según el ancho) — no se le
 // puede poner id="header" a ninguna de las dos sin duplicar el id o dejar el
 // widget invisible en el breakpoint contrario. Por eso el mount point es este
-// contenedor propio, siempre presente sin importar el tamaño de pantalla,
-// pegado arriba a la derecha (zona de header, no botón flotante de esquina).
+// contenedor propio, siempre presente sin importar el tamaño de pantalla.
+//
+// Posición: arriba a la derecha en desktop (zona de header, no botón flotante
+// de esquina). En móvil NO: ahí el header mide 56px y el widget caía justo
+// encima de la campana de la Torre de Control, tapándola por completo. Bajo
+// `lg` se va a la esquina inferior derecha, que además es donde se espera un
+// botón de soporte en móvil.
 export function BoostySupportMount() {
-  return <div id="header" className="fixed right-3 top-3 z-[60]" />;
+  return <div id="header" className="fixed bottom-3 right-3 z-[60] lg:bottom-auto lg:top-3" />;
 }
 
 export function BoostySupportScript({

@@ -133,7 +133,11 @@ Para apagarlo o pausar mensajes: ver `/agent` → pestaña Agente → interrupto
   contenido a la mitad: plan, rangos de edad, cruce plan×edad, evolución
   mensual, estado, concentración de corredores, repetición por cliente y prima.
   Fuente: `zoho_pipeline_overview()`, `zoho_corredor_detalle()` y
-  `zoho_pipeline_analitica()` (migraciones 0064-0066). Tras enriquecer 9.998
+  `zoho_pipeline_analitica()` (migraciones 0064-0066), que leen la vista
+  materializada `mv_zoho_clasificacion` (0067): la clasificación de los 14.427
+  tickets se precalcula y se refresca por cron un minuto después del sync
+  (`zoho-refrescar-clasificacion`, 1s). Sin eso cada carga recalculaba regex
+  fila por fila y la página tardaba el doble. Tras enriquecer 9.998
   tickets con el campo Asesor que faltaba: **B2C ~2.500 · B2B ~11.700 · sin
   atribución 113** (99,2% clasificado), ~1.120 corredores y ~8.300 clientes.
   `moneda` y `ramo` están vacías al 100% en Zoho: no se grafican a propósito.
@@ -310,6 +314,24 @@ espacio). Aprovisionar/actualizar el Managed Agent de Anthropic: `node
 17. **Kommo exige `loss_reason_id` junto con `status_id`** en el mismo PATCH
     para marcar Perdido; mandarlo solo da 400. Los estados 142 (Ganado) y 143
     (Perdido) son globales, compartidos por todos los embudos.
+18. **Una función `immutable` llamada desde otra función o desde una vista
+    necesita el esquema explícito** (`public.zoho_cedula(...)`): la definición
+    se resuelve con el `search_path` de quien la crea, que no siempre incluye
+    `public`. Falla con "function ... does not exist" aunque exista.
+
+### Rendimiento medido (prueba de carga, 2026-08-29)
+
+15 conversaciones simultáneas end-to-end publicando en Kommo, con 4 usuarios
+navegando el dashboard a la vez: **15/15 respondidas, 0 errores, $0,51**.
+- Cola: 15/15 `done` al primer intento.
+- Recorrido: clasificado ~47s, borrador p50 115s, **publicado p50 139s / p95
+  186s**. El grueso NO es el modelo: es el cron de `process-inbound` (hasta
+  60s) más `response_debounce_seconds=45`. `generate_response` tardó 19,9s de
+  promedio bajo carga — más rápido que su promedio histórico, o sea que la
+  concurrencia no lo degrada.
+- Web bajo carga (4.902 peticiones): p50 122ms, p95 165ms, **0 errores**.
+- Producción (Netlify): p50 ~500ms; `/pipeline` era la más lenta con
+  1.500-1.800ms y bajó a **765-810ms** con la vista materializada.
 
 ---
 
