@@ -4,6 +4,7 @@ import {
   PageShell, StatRow, StatCard, Badge, EmptyState,
   BarChart3, TrendUp, Target, Users,
 } from "@/components/ui";
+import { DestinosView } from "./destinos";
 
 export const dynamic = "force-dynamic";
 
@@ -26,7 +27,7 @@ type TicketRow = {
   created_time: string | null; web_url: string | null;
 };
 
-type SearchParams = { q?: string; status?: string; channel?: string; page?: string };
+type SearchParams = { q?: string; status?: string; channel?: string; page?: string; vista?: string };
 
 function Bar({ value, max, color }: { value: number; max: number; color?: string }) {
   const w = Math.max(2, (value / (max || 1)) * 100);
@@ -39,6 +40,7 @@ function Bar({ value, max, color }: { value: number; max: number; color?: string
 
 export default async function PipelinePage({ searchParams }: { searchParams: SearchParams }) {
   const supabase = createSupabaseServerClient();
+  const vista = searchParams.vista === "destinos" ? "destinos" : "";
 
   const [{ data: stagesData }, { data: kpisData }, { data: funnelData }, { data: channelData }, { data: agentData }] =
     await Promise.all([
@@ -129,10 +131,43 @@ export default async function PipelinePage({ searchParams }: { searchParams: Sea
     return qs ? `/pipeline?${qs}` : "/pipeline";
   }
 
+  const tabs = (
+    <div className="flex gap-1 rounded-lg border border-neutral-200 bg-white p-0.5">
+      {[
+        { v: "", label: "Embudo Zoho" },
+        { v: "destinos", label: "B2C / B2B por corredor" },
+      ].map((t) => (
+        <Link
+          key={t.v || "embudo"}
+          href={t.v ? `/pipeline?vista=${t.v}` : "/pipeline"}
+          className={
+            "rounded-md px-3 py-1.5 text-xs font-medium transition-colors " +
+            (vista === t.v ? "bg-neutral-900 text-white" : "text-neutral-600 hover:bg-neutral-50")
+          }
+        >
+          {t.label}
+        </Link>
+      ))}
+    </div>
+  );
+
+  if (vista === "destinos") {
+    return (
+      <PageShell
+        title="Pipeline Zoho Desk"
+        description="A dónde va cada ticket de Zoho: al agente (cliente final) o al embudo de corredores."
+        actions={tabs}
+      >
+        <DestinosView since={null} />
+      </PageShell>
+    );
+  }
+
   return (
     <PageShell
       title="Pipeline Zoho Desk"
       description="Embudo de ventas sincronizado desde Zoho Desk — mismos datos que el dashboard público del pipeline."
+      actions={tabs}
     >
       <StatRow>
         <StatCard label="Total tickets" value={fmtN(kpis.total_tickets)} hint={`${fmtN(kpis.nuevos_30d)} en 30 días`} icon={<BarChart3 size={18} />} tone="brand" />

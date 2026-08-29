@@ -11,6 +11,14 @@ const DEPARTMENT_ID = process.env.ZOHO_DEPARTMENT_ID;
 
 let cachedToken = null;
 let cachedExp = 0;
+// Refresco EN VUELO compartido. Sin esto, los N workers concurrentes que
+// arrancan a la vez con la cache vacia disparan N refrescos simultaneos, y el
+// endpoint de tokens de Zoho es mucho mas estricto que la API de Desk: al
+// pasarse responde "You have made too many requests continuously" y bloquea
+// TODAS las llamadas por un rato (visto en produccion: el enriquecimiento
+// paso a 0/9998 sin un solo error visible en el log, porque el fallo ocurria
+// al pedir el token, no al pedir el ticket).
+let refreshInFlight = null;
 
 function requireEnv() {
   const missing = ['ZOHO_CLIENT_ID', 'ZOHO_CLIENT_SECRET', 'ZOHO_REFRESH_TOKEN', 'ZOHO_ORG_ID', 'ZOHO_DEPARTMENT_ID']
@@ -22,24 +30,43 @@ export async function getAccessToken() {
   requireEnv();
   const now = Date.now();
   if (cachedToken && now < cachedExp - 60_000) return cachedToken;
+  // Ya hay un refresco corriendo: esperar ESE en vez de disparar otro.
+  if (refreshInFlight) return refreshInFlight;
 
-  const body = new URLSearchParams({
-    refresh_token: REFRESH_TOKEN,
-    client_id: CLIENT_ID,
-    client_secret: CLIENT_SECRET,
-    grant_type: 'refresh_token',
+  refreshInFlight = (async () => {
+    const body = new URLSearchParams({
+      refresh_token: REFRESH_TOKEN,
+      client_id: CLIENT_ID,
+      client_secret: CLIENT_SECRET,
+      grant_type: 'refresh_token',
+    });
+
+    // Reintento con espera creciente: si ya nos bloquearon, insistir de
+    // inmediato solo alarga el bloqueo.
+    let ultimo = null;
+    for (let intento = 0; intento < 4; intento++) {
+      const r = await fetch(`${ACCOUNTS_HOST}/oauth/v2/token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body,
+      });
+      const j = await r.json();
+      if (j.access_token) {
+        cachedToken = j.access_token;
+        cachedExp = Date.now() + (j.expires_in || 3600) * 1000;
+        return cachedToken;
+      }
+      ultimo = j;
+      const bloqueado = JSON.stringify(j).includes('too many requests');
+      if (!bloqueado) break;
+      await sleep(30_000 * (intento + 1));
+    }
+    throw new Error(`No se pudo refrescar el token Zoho: ${JSON.stringify(ultimo)}`);
+  })().finally(() => {
+    refreshInFlight = null;
   });
 
-  const r = await fetch(`${ACCOUNTS_HOST}/oauth/v2/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body,
-  });
-  const j = await r.json();
-  if (!j.access_token) throw new Error(`No se pudo refrescar el token Zoho: ${JSON.stringify(j)}`);
-  cachedToken = j.access_token;
-  cachedExp = now + (j.expires_in || 3600) * 1000;
-  return cachedToken;
+  return refreshInFlight;
 }
 
 async function deskFetch(path, params = {}) {

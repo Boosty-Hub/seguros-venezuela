@@ -42,13 +42,26 @@ export async function upsertTickets(rows) {
 /** IDs de tickets sin customFields (para la pasada de enriquecimiento). */
 export async function getTicketsMissingDetail({ onlyOpen = true, limit = 5000 } = {}) {
   requireEnv();
-  let url = `${SUPABASE_URL}/rest/v1/tickets?select=id&custom_fields=is.null&order=created_time.desc&limit=${limit}`;
+  // PAGINADO a proposito: PostgREST corta en 1000 filas por respuesta
+  // (max-rows del servidor) e IGNORA un ?limit= mayor sin avisar. Antes esto
+  // pedia limit=12000 y devolvia 998 -> `enrich all 12000` decia "listo" tras
+  // enriquecer el 9% del backlog, en silencio. Se pagina con Range hasta
+  // juntar `limit` ids o agotar la tabla (mismo patron que
+  // getTicketsKommoConAsesor).
+  let url = `${SUPABASE_URL}/rest/v1/tickets?select=id&custom_fields=is.null&order=created_time.desc`;
   // "pipeline activo" = tickets no finalizados (Open + On Hold)
   if (onlyOpen) url += `&status_type=in.(Open,"On Hold")`;
-  const r = await fetch(url, { headers: headers() });
-  if (!r.ok) throw new Error(`Supabase select -> HTTP ${r.status}: ${await r.text()}`);
-  const j = await r.json();
-  return j.map((x) => x.id);
+  const PAGE = 1000;
+  const out = [];
+  for (let from = 0; from < limit; from += PAGE) {
+    const to = Math.min(from + PAGE, limit) - 1;
+    const r = await fetch(url, { headers: headers({ Range: `${from}-${to}` }) });
+    if (!r.ok) throw new Error(`Supabase select -> HTTP ${r.status}: ${await r.text()}`);
+    const page = await r.json();
+    out.push(...page.map((x) => x.id));
+    if (page.length < to - from + 1) break; // ultima pagina
+  }
+  return out;
 }
 
 /** max(modified_time) actualmente almacenado (watermark incremental). */
