@@ -19,3 +19,4 @@ agent/system-prompt.md
 supabase/.branches
 supabase/.temp
 supabase/.env
+*.tmp.json
