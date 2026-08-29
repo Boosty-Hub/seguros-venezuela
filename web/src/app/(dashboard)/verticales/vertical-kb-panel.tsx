@@ -106,7 +106,9 @@ export function VerticalKbPanel({ verticalId, docs }: { verticalId: string; docs
     <div className="space-y-4">
       <p className="text-xs text-neutral-500">
         Documentos que el agente consulta (búsqueda semántica, on-demand) SOLO cuando la conversación está
-        clasificada en esta vertical. Acepta PDF, DOCX, TXT, MD, SRT, VTT — hasta 50MB.
+        clasificada en esta vertical. Acepta PDF, DOCX, TXT, MD, SRT, VTT (hasta 50MB) e imágenes
+        PNG/JPG (hasta 5MB). Los flyers y folletos sin texto seleccionable se leen automáticamente
+        con IA.
       </p>
 
       {/*
@@ -158,7 +160,7 @@ export function VerticalKbPanel({ verticalId, docs }: { verticalId: string; docs
             <input
               id={`kb-file-${verticalId}`}
               type="file"
-              accept=".pdf,.docx,.txt,.md,.srt,.vtt"
+              accept=".pdf,.docx,.txt,.md,.srt,.vtt,.png,.jpg,.jpeg,.webp,.gif"
               onChange={(e) => setFile(e.target.files?.[0] ?? null)}
               className="sr-only"
             />

@@ -18,6 +18,7 @@ export const MODEL_KEYS: Record<string, string> = {
   COMMENT_REPLY_MODEL: "claude-haiku-4-5",
   GRADER_MODEL: "claude-haiku-4-5",
   DREAMS_MODEL: "claude-haiku-4-5",
+  KB_OCR_MODEL: "claude-haiku-4-5",
 };
 
 // Descripción humana de qué gobierna cada key (para el panel de /consumo).
@@ -41,5 +42,9 @@ export const MODEL_KEY_INFO: Record<string, { label: string; detail: string }> =
   DREAMS_MODEL: {
     label: "Dreams (aprendizaje nocturno)",
     detail: "Destila aprendizajes de las conversaciones del día/semana. Corre 1 vez por día + 1 por semana.",
+  },
+  KB_OCR_MODEL: {
+    label: "Lectura de PDFs sin texto",
+    detail: "Transcribe flyers y folletos que son solo imagen al subirlos a la base de conocimiento. Corre una única vez por documento, y solo si el PDF no trae texto seleccionable.",
   },
 };
