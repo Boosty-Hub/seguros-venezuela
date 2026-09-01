@@ -15,7 +15,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { loadConfig } from "../_shared/config.ts";
-import { patchLeadField, runSalesbot } from "../_shared/kommo.ts";
+import { patchLeadField, runSalesbot, fetchLeadStage, KOMMO_WON_STATUS, KOMMO_LOST_STATUS } from "../_shared/kommo.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -202,9 +202,37 @@ Deno.serve(async (req: Request) => {
         // NADIE lo reintentaba: el cliente se quedaba sin respuesta y en
         // silencio. Ahora se deja en 'approved' para que el próximo ciclo del
         // cron lo retome, hasta MAX_PUBLISH_ATTEMPTS.
+        //
+        // Dos motivos NO transitorios que SÍ se vieron en producción gastando
+        // los 3 intentos igual (nunca iban a tener éxito, el estado que los
+        // causa no cambia solo):
+        //   - "Lead not found": el lead ya no existe en Kommo (borrado/fusionado).
+        //   - "Not enough rights" con el lead YA en Ganado/Perdido (confirmado:
+        //     2 casos reales, ambos con el lead en Perdido/143) — Kommo bloquea
+        //     escrituras de custom_fields en leads cerrados para esta integración.
+        // En ambos, terminal de una (sin gastar los 3 intentos) con un motivo
+        // específico en vez del 400 crudo.
+        let terminalReason: string | null = null;
+        if (/lead not found/i.test(msg)) {
+          terminalReason = "lead_not_found";
+        } else if (/not enough rights/i.test(msg)) {
+          const kommoLeadId = Number(d.messages?.leads?.kommo_lead_id);
+          if (Number.isFinite(kommoLeadId)) {
+            try {
+              const stage = await fetchLeadStage(kommoLeadId, kommoDomain, kommoToken);
+              if (stage.statusId === KOMMO_WON_STATUS || stage.statusId === KOMMO_LOST_STATUS) {
+                terminalReason = "lead_closed";
+              }
+            } catch {
+              // No se pudo confirmar la etapa — se trata como transitorio
+              // (comportamiento previo: reintentar).
+            }
+          }
+        }
+
         const prev = (d.agent_metadata ?? {}) as Record<string, unknown>;
         const attempts = Number(prev.publish_attempts ?? 0) + 1;
-        const giveUp = attempts >= MAX_PUBLISH_ATTEMPTS;
+        const giveUp = terminalReason !== null || attempts >= MAX_PUBLISH_ATTEMPTS;
         await supabase
           .from("drafts")
           .update({
@@ -212,10 +240,20 @@ Deno.serve(async (req: Request) => {
             // y se perdían session_id / tool_calls / model / vertical — o sea
             // la trazabilidad y la atribución de consumo del draft.
             status: giveUp ? "failed" : "approved",
-            agent_metadata: { ...prev, publish_error: msg, publish_attempts: attempts },
+            agent_metadata: {
+              ...prev,
+              publish_error: terminalReason === "lead_closed"
+                ? `lead cerrado (Ganado/Perdido) — Kommo no permite escribirle: ${msg}`
+                : msg,
+              publish_attempts: attempts,
+              ...(terminalReason ? { publish_error_kind: terminalReason } : {}),
+            },
           })
           .eq("id", d.id);
-        errors.push({ draft_id: d.id, error: `${msg}${giveUp ? "" : ` (intento ${attempts}, se reintenta)`}` });
+        errors.push({
+          draft_id: d.id,
+          error: `${msg}${giveUp ? (terminalReason ? ` (terminal: ${terminalReason})` : "") : ` (intento ${attempts}, se reintenta)`}`,
+        });
         failed++;
       }
     }

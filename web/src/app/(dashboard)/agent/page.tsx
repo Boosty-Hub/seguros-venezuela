@@ -28,7 +28,6 @@ export default async function AgentPage({
     error?: string;
     tab?: string;
     kommo_saved?: string;
-    alerts_saved?: string;
     asub?: string;
   };
 }) {
@@ -223,12 +222,7 @@ export default async function AgentPage({
         kommoSlot={<KommoBody kommoSaved={searchParams.kommo_saved === "1"} />}
         toolsSlot={<ToolsBody />}
         seguimientoSlot={<SeguimientoBody />}
-        ajustesSlot={
-          <SettingsBody
-            alertsSaved={searchParams.alerts_saved === "1"}
-            asub={searchParams.asub}
-          />
-        }
+        ajustesSlot={<SettingsBody asub={searchParams.asub} />}
       >
         {/* Panel: Identidad */}
         <div className="space-y-6">

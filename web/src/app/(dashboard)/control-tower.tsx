@@ -53,6 +53,9 @@ const KIND_LABEL: Record<string, string> = {
   human_review_needed: "Necesita tu revisión",
   outcomes_regression: "Bajó la calidad",
   dream_error: "Aprendizaje con error",
+  inbound_silence: "Silencio de Kommo",
+  kommo_webhook_reconnected: "Webhook de Kommo reconectado solo",
+  kommo_webhook_reconnect_failed: "Webhook de Kommo caído",
 };
 
 function timeAgo(iso: string): string {

@@ -17,7 +17,7 @@ Qué se hizo, dónde quedó y qué falta. **Leer esto primero** al retomar.
 
 ---
 
-## Estado actual (2026-08-29)
+## Estado actual (2026-09-01)
 
 **Agente "Asesora Sofi" (Kommo, WhatsApp/Instagram): EN VIVO, publicando.**
 `agent_enabled=true`, `publishing_enabled=true`, `bypass_review=true`.
@@ -46,7 +46,9 @@ Para apagarlo: `/agent` → "Agente activo" (para todo) o "Publicar en Kommo"
   Antes quedaba mudo para siempre.
 - **`publish-to-kommo` reintenta** (3 veces) y **fusiona** `agent_metadata` en
   vez de sobrescribirlo. Antes un error dejaba el draft `failed` para siempre
-  y se perdían `session_id`/`tool_calls`/`model`/`vertical`.
+  y se perdían `session_id`/`tool_calls`/`model`/`vertical`. Dos casos NO se
+  reintentan (terminal de una): lead cerrado (Ganado/Perdido) o borrado en
+  Kommo (trampa 23).
 - **Verticales**: 14 activas. Cada una inyecta su `system_prompt` al agente.
   Intermediarios-apertura-de-código mueve el lead a "Apertura de códigos" del
   pipeline CONFIGURACIONES (notifica por el cambio de etapa, no por mensaje).
@@ -96,6 +98,57 @@ Para apagarlo: `/agent` → "Agente activo" (para todo) o "Publicar en Kommo"
 - Datos tras enriquecer 9.998 tickets con el Asesor que faltaba: **B2C ~2.550 ·
   B2B ~11.760 · sin atribución 113** (99,2% clasificado), ~1.120 corredores,
   ~8.360 clientes finales.
+
+### Alertas abiertas
+
+6 genuinas sin resolver hace 4-5 días — gap de **proceso**, no de código:
+**Andrea** (queja de reembolso, tox 0.30, desde 26/08) y **Andrés Ramírez**
+(5 alertas del 27/08: documentos/cédula, un WhatsApp en formato no soportado
+por Kommo, ambigüedad individual/colectiva). Requieren un humano en Kommo.
+El resto de la Torre (2 audios, silencio del webhook, 2 dreams, regresión de
+outcomes, 3 `draft_failed`) se auditó el 01/09, se explicó y quedó
+reconocido con nota en `metadata.resolved_note` — detalle técnico en las
+trampas 20-23 y las secciones de abajo. `detectOutcomesRegression` ahora
+ignora una caída de `lead_replied` si el volumen de inbound también se
+desplomó (>50%) — ese grader depende del volumen, no de la calidad del
+agente, y confundía el apagón del webhook con una regresión real.
+
+**Se eliminó el webhook de salida de alertas** (`alert_config`,
+Slack/Discord): nunca se usó. Migración `0070` tira la tabla; las alertas
+viven solo en la Torre de Control.
+
+### Webhook de Kommo → auto-sanado
+
+Kommo deshabilita el webhook cuando le falla sostenido (pasó el 29/08
+~16:20 UTC: ~40h mudo; la alerta `inbound_silence` avisaba desde el 28/08
+sin que nadie la atendiera). `alerts-scan` (cada 5 min) chequea el estado
+real contra la API de Kommo y, si está `disabled` o no existe, lo recrea
+solo (DELETE + POST — Kommo no admite PATCH de `disabled`, trampa 20), sin
+esperar revisión humana: si falla, reintenta cada 20 min indefinidamente
+(cooldown solo sobre la escritura; la lectura corre siempre). Alerta
+`kommo_webhook_reconnected` / `kommo_webhook_reconnect_failed` en la Torre.
+
+### Bitácora propia (`system_logs`)
+
+El Log Drain oficial de Supabase cuesta $60/mes — descartado. En su lugar,
+tabla propia `system_logs` (migración 0069, retención
+`runtime_config.SYSTEM_LOGS_RETENTION_DAYS` default 30 días, cron de
+limpieza diario) + `_shared/system-log.ts` (`logEvent`, fail-soft),
+instrumentada a mano en `kommo-webhook` (secret inválido, excepciones) y
+`process-inbound` (fallas reales de Whisper, crashes del drain). No
+reemplaza al Log Drain (no cubre Postgres/Auth/HTTP general) — es
+instrumentación puntual de los dos puntos que ya mordieron.
+
+### Transcripción de notas de voz (Whisper)
+
+Estaba rota al 100%, no de forma intermitente (trampas 21-22): la descarga
+fallaba siempre por un redirect mal manejado, y aun bajando el archivo
+Whisper lo rechazaba por un nombre de archivo que no coincidía con el
+formato real. Arreglado. Además, el recobro automático ahora también
+reintenta audio (antes solo imagen/documento), y la transcripción exitosa
+se persiste en `messages.content` con prefijo 🎙️ — antes se usaba solo para
+clasificar ESE mensaje y el historial se quedaba con el placeholder
+`[Audio ...]` para siempre.
 
 ### Pipeline Zoho → Kommo
 
@@ -163,6 +216,7 @@ cualquier lead). Refresh token de Zoho sin caducidad conocida, pero revocable.
 select * from public.estado_general;      -- totales, cortes, fallos 24h
 select * from public.bitacora_reciente;   -- una fila por corrida del sync
 select * from public.analytics_overview(now() - interval '30 days');
+select * from public.system_logs order by created_at desc limit 50; -- kommo-webhook / process-inbound, 30 días
 ```
 
 `sync_log` graba cada ejecución. Otras vistas: `kommo_sync_status`,
@@ -260,6 +314,28 @@ Edge Functions: `npx supabase functions deploy <slug> --project-ref
 19. **Bug de FK ambigua (`drafts`↔`messages`)**: `publish-to-kommo`,
     `evaluate-outcomes` y `alerts-scan` tiraban 500 en cron por tener dos FKs
     entre esas tablas. Se resuelve con el hint `messages!drafts_message_id_fkey`.
+20. **La API de Kommo no admite reactivar un webhook con PATCH** (`PATCH
+    /api/v4/webhooks/{id}` → 404 "Cannot PATCH"). Un webhook `disabled` (o
+    borrado) solo se repara con `DELETE` (por `destination`) + `POST` de
+    nuevo con el mismo destino y `settings`. Automatizado en `alerts-scan`
+    (ver "Webhook de Kommo → auto-sanado").
+21. **`fetch(url, {redirect:"error"})` no sirve para adjuntos de Kommo**: el
+    dominio de media (`amojo.kommo.com`) SIEMPRE redirige (2 saltos, hasta un
+    bucket de GCS firmado) — con `redirect:"error"` la promesa se rechaza
+    ante el primer 3xx. Para permitir el redirect sin abrir un hueco de SSRF,
+    hay que seguirlo a mano con `redirect:"manual"`, validando CADA destino
+    contra el mismo allowlist de hosts (ver `fetchAudioFollowingRedirects`).
+22. **Whisper valida el formato de audio por la extensión del nombre del
+    multipart, no por los bytes reales.** El `file_name` que reporta Kommo en
+    el payload (`file.ogg`) no coincide con el archivo real servido (viene
+    transcodeado, `content-type: audio/mp4`) → "Invalid file format" siempre.
+    Hay que derivar la extensión de `content-disposition`/`content-type` de
+    la respuesta real de descarga, nunca del nombre que reporta Kommo.
+23. **Kommo devuelve 400 "Not enough rights" al hacer PATCH de custom_fields
+    en un lead que YA está en Ganado (142) o Perdido (143)**, aunque el token
+    sea de admin — no es un problema de permisos del token, es el estado del
+    lead. `publish-to-kommo` lo detecta con `fetchLeadStage` antes de agotar
+    los 3 reintentos (nunca iba a funcionar, el lead no se reabre solo).
 
 ---
 
@@ -278,3 +354,9 @@ Edge Functions: `npx supabase functions deploy <slug> --project-ref
   llevaba 3 días sin traer un ticket (trampa 1): corregido, 236 recuperados.
   Prueba de carga end-to-end (ver Rendimiento) que destapó y motivó la vista
   materializada.
+- **29-08 → 01-09**: apagón del webhook de Kommo (trampa 20) y transcripción
+  de audio rota al 100% (trampas 21-22), ambos arreglados con auto-sanado y
+  recobro — 2 notas de voz reales atascadas se recuperaron. Auditoría de la
+  Torre de Control: 9 de 15 alertas explicadas y reconocidas, incluyendo
+  `publish-to-kommo` detectando leads cerrados/borrados (trampa 23); se
+  quitó el webhook de salida de alertas (nunca se usó).

@@ -5,7 +5,9 @@
 //   - human_review_needed: mensajes inbound requires_human_review sin alerta y sin draft enviado
 //   - outcomes_regression: graders con score promedio últimas 24h < 70% del de la semana previa
 //
-// Después postea cada alerta nueva al webhook configurado (Slack/Discord-friendly).
+// Las alertas viven SOLO en la Torre de Control (in-system) — no hay
+// Slack/Discord configurado, así que se quitó el webhook de salida
+// (`alert_config`/`postWebhook`) que nunca se llegó a usar.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { isBusinessHours, type BusinessHoursConfig } from "../_shared/business-hours.ts";
@@ -17,21 +19,6 @@ const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, {
   auth: { persistSession: false },
 });
-
-type AlertConfig = {
-  webhook_url: string | null;
-  webhook_enabled: boolean;
-  webhook_kinds: string[];
-};
-
-async function getConfig(): Promise<AlertConfig | null> {
-  const { data } = await supabase
-    .from("alert_config")
-    .select("webhook_url, webhook_enabled, webhook_kinds")
-    .eq("is_active", true)
-    .maybeSingle();
-  return data;
-}
 
 async function existingAlerts(kind: string, refIds: string[]): Promise<Set<string>> {
   if (refIds.length === 0) return new Set();
@@ -71,32 +58,6 @@ async function createAlert(a: AlertInput) {
   return data?.id as string;
 }
 
-async function postWebhook(config: AlertConfig, alert: AlertInput) {
-  if (!config.webhook_enabled || !config.webhook_url) return;
-  if (!config.webhook_kinds.includes(alert.kind)) return;
-  const emoji = alert.severity === "critical" ? "🚨" : alert.severity === "warning" ? "⚠️" : "ℹ️";
-  // Payload genérico compatible con Slack y Discord
-  const payload = {
-    text: `${emoji} *${alert.title}*\n${alert.description}`,
-    embeds: [
-      {
-        title: `${emoji} ${alert.title}`,
-        description: alert.description,
-        color: alert.severity === "critical" ? 15158332 : alert.severity === "warning" ? 16294198 : 5814783,
-      },
-    ],
-  };
-  try {
-    await fetch(config.webhook_url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-  } catch (e) {
-    console.warn("webhook post failed:", e);
-  }
-}
-
 // ---------------- Detectores ----------------
 async function detectFailedDrafts(): Promise<AlertInput[]> {
   const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
@@ -120,14 +81,20 @@ async function detectFailedDrafts(): Promise<AlertInput[]> {
     .map((r) => {
       const leadName = r.messages?.leads?.display_name ?? `lead ${r.messages?.leads?.kommo_lead_id ?? "?"}`;
       const err = r.agent_metadata?.publish_error ?? r.agent_metadata?.error ?? "(sin detalle)";
+      // lead_closed / lead_not_found (publish-to-kommo) no son un fallo del
+      // sistema — el lead ya se cerró o se borró en Kommo y no hay nada que
+      // reintentar. Se avisan igual (por si alguien quiere seguirlo a mano
+      // desde Kommo) pero sin la urgencia de "critical".
+      const errKind = r.agent_metadata?.publish_error_kind;
+      const severity = errKind === "lead_closed" || errKind === "lead_not_found" ? "warning" : "critical";
       return {
         kind: "draft_failed",
-        severity: "critical" as const,
+        severity: severity as "warning" | "critical",
         title: `Draft falló: ${leadName}`,
         description: String(err).slice(0, 500),
         ref_table: "drafts",
         ref_id: r.id,
-        metadata: { lead_name: leadName },
+        metadata: { lead_name: leadName, ...(errKind ? { publish_error_kind: errKind } : {}) },
       };
     });
 }
@@ -206,9 +173,27 @@ async function detectOutcomesRegression(): Promise<AlertInput[]> {
     baseAgg.set(r.grader_id as string, cur);
   }
 
+  // `lead_replied` mide "¿llegó un inbound del lead tras el draft?" — su score
+  // depende MECÁNICAMENTE del volumen de mensajes entrantes, no de la calidad
+  // del agente. Si el volumen de inbound se desplomó (ej. el webhook de Kommo
+  // caído: visto en producción, cayó de n=90 a n=6 el mismo día del apagón),
+  // una caída de score de ESTE grader es un artefacto del apagón, no una
+  // regresión real — no hay nada que "arreglar" en el agente. Los demás
+  // graders (llm_judge, length_appropriate, etc.) no dependen del volumen, así
+  // que esta guarda es específica de `lead_replied`.
+  const [{ count: recentInbound }, { count: baselineInbound }] = await Promise.all([
+    supabase.from("messages").select("id", { count: "exact", head: true })
+      .eq("direction", "inbound").gte("created_at", since24),
+    supabase.from("messages").select("id", { count: "exact", head: true })
+      .eq("direction", "inbound").gte("created_at", since7d).lt("created_at", since24),
+  ]);
+  const baselineDailyRate = (baselineInbound ?? 0) / 6; // since7d cubre 6 días antes de since24
+  const inboundVolumeCollapsed = baselineDailyRate >= 5 && (recentInbound ?? 0) < 0.5 * baselineDailyRate;
+
   const alerts: AlertInput[] = [];
   for (const [graderId, recentVal] of recentAgg.entries()) {
     if (recentVal.count < 5) continue;
+    if (recentVal.slug === "lead_replied" && inboundVolumeCollapsed) continue;
     const baseVal = baseAgg.get(graderId);
     if (!baseVal || baseVal.count < 5) continue;
     const recentAvg = recentVal.sum / recentVal.count;
@@ -375,6 +360,116 @@ async function detectInboundSilence(): Promise<AlertInput[]> {
   ];
 }
 
+// ---- Auto-reconexión del webhook de Kommo ----
+// Kommo deshabilita el webhook cuando le falla de forma sostenida (ver nota
+// arriba de detectInboundSilence: 6 y 4 días mudos sin avisar). En vez de
+// esperar a que el operador entre a Kommo → Ajustes → Integraciones a mano,
+// cada corrida (cada 5 min) chequeamos el estado real vía API y, si está
+// `disabled`, lo recreamos solos: la API de Kommo NO admite togglear
+// `disabled` con PATCH (probado: 404 "Cannot PATCH .../webhooks/{id}"), así
+// que la única forma de reactivarlo es DELETE + POST con el mismo destino.
+// Deja rastro SIEMPRE en `alerts` (éxito o fallo) para que la Torre de
+// Control lo muestre — la reconexión silenciosa sería tan invisible como el
+// apagón original.
+//
+// El reintento NO espera revisión humana: si falla, se vuelve a intentar
+// solo, cada RETRY_COOLDOWN_MINUTES, indefinidamente — acknowledged_at no se
+// consulta en ningún lado de esta función a propósito. El cooldown solo
+// limita la escritura (DELETE+POST) para no golpear la API de Kommo cada 5
+// min mientras está caída; el chequeo de lectura (GET) corre siempre, así
+// que si alguien lo arregla a mano entre medio, se detecta de inmediato.
+const RETRY_COOLDOWN_MINUTES = 20;
+
+async function ensureKommoWebhookHealthy(cfg: ConfigReader): Promise<AlertInput[]> {
+  const domain = cfg.get("KOMMO_API_DOMAIN");
+  const token = cfg.get("KOMMO_ACCESS_TOKEN");
+  if (!domain || !token) return []; // agente aún no configurado — nada que chequear
+
+  const secret = Deno.env.get("KOMMO_WEBHOOK_SECRET") ?? "";
+  const dest = `${SUPABASE_URL}/functions/v1/kommo-webhook${secret ? `?secret=${secret}` : ""}`;
+  const settings = ["add_lead", "add_message", "update_lead"];
+  const authHeaders = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+
+  type KommoWebhook = { id: number; destination: string; disabled: boolean; updated_at: number };
+
+  const fail = async (detail: string): Promise<AlertInput[]> => [
+    {
+      kind: "kommo_webhook_reconnect_failed",
+      severity: "critical",
+      title: "Webhook de Kommo caído: la reconexión automática falló",
+      description:
+        `El webhook a /kommo-webhook está deshabilitado o ausente en Kommo y el intento automático de ` +
+        `recrearlo falló: ${detail}. Se reintentará solo en ~${RETRY_COOLDOWN_MINUTES} min; si sigue fallando, ` +
+        `reconéctalo a mano en Kommo → Ajustes → Integraciones.`,
+      metadata: { destination: dest, detail },
+    },
+  ];
+
+  let list: KommoWebhook[];
+  try {
+    const res = await fetch(`https://${domain}/api/v4/webhooks`, { headers: authHeaders });
+    if (!res.ok) return await fail(`GET /webhooks ${res.status} ${(await res.text()).slice(0, 300)}`);
+    const body = await res.json();
+    list = (body?._embedded?.webhooks ?? []) as KommoWebhook[];
+  } catch (err) {
+    return await fail(`GET /webhooks: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  const ours = list.find((w) => w.destination.startsWith(`${SUPABASE_URL}/functions/v1/kommo-webhook`));
+  if (ours && !ours.disabled) return []; // todo en orden, nada que hacer
+
+  // Cooldown de reintento (solo para la parte que ESCRIBE, DELETE+POST): sin
+  // esto, cada corrida del cron (cada 5 min) golpearía DELETE+POST contra
+  // Kommo mientras la causa de fondo siga rota.
+  const { data: lastAttempt } = await supabase
+    .from("alerts")
+    .select("id")
+    .eq("kind", "kommo_webhook_reconnect_failed")
+    .gte("created_at", new Date(Date.now() - RETRY_COOLDOWN_MINUTES * 60 * 1000).toISOString())
+    .limit(1);
+  if (lastAttempt && lastAttempt.length > 0) return [];
+
+  const disabledSince = ours ? new Date(ours.updated_at * 1000).toISOString() : null;
+
+  try {
+    if (ours) {
+      const del = await fetch(`https://${domain}/api/v4/webhooks`, {
+        method: "DELETE",
+        headers: authHeaders,
+        body: JSON.stringify({ destination: ours.destination }),
+      });
+      if (!del.ok && del.status !== 404) {
+        return await fail(`DELETE /webhooks ${del.status} ${(await del.text()).slice(0, 300)}`);
+      }
+    }
+    const post = await fetch(`https://${domain}/api/v4/webhooks`, {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({ destination: dest, settings }),
+    });
+    if (!post.ok) return await fail(`POST /webhooks ${post.status} ${(await post.text()).slice(0, 300)}`);
+    const created = await post.json();
+    if (created?.disabled) return await fail("recreado pero sigue disabled=true según Kommo");
+
+    return [
+      {
+        kind: "kommo_webhook_reconnected",
+        severity: "warning",
+        title: "Webhook de Kommo se había apagado — reconectado automáticamente",
+        description: ours
+          ? `Kommo había deshabilitado el webhook (visto por última vez activo el ${disabledSince}). ` +
+            `Se recreó solo (id nuevo ${created.id}, antes ${ours.id}) y ya está \`disabled=false\`. ` +
+            `Revisa si en ese lapso se perdieron conversaciones.`
+          : `No existía ningún webhook registrado hacia /kommo-webhook (alguien pudo haberlo borrado desde ` +
+            `Kommo). Se creó uno nuevo (id ${created.id}).`,
+        metadata: { previous_id: ours?.id ?? null, new_id: created.id, disabled_since: disabledSince },
+      },
+    ];
+  } catch (err) {
+    return await fail(err instanceof Error ? err.message : String(err));
+  }
+}
+
 // ---- Tope de consumo (diario/mensual) → apaga el agente COMPLETO ----
 // Configurable desde /consumo (runtime_config USAGE_DAILY_CAP_USD /
 // USAGE_MONTHLY_CAP_USD, vacío/0 = sin tope). Al superarse, apaga
@@ -454,22 +549,21 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const config = await getConfig();
     const runtimeCfg = await loadConfig(supabase);
-    const [failed, review, regression, silence, capsExceeded, providerCreditResolved] = await Promise.all([
+    const [failed, review, regression, silence, webhookHealth, capsExceeded, providerCreditResolved] = await Promise.all([
       detectFailedDrafts(),
       detectHumanReviewNeeded(),
       detectOutcomesRegression(),
       detectInboundSilence(),
+      ensureKommoWebhookHealthy(runtimeCfg),
       detectAndEnforceUsageCaps(runtimeCfg),
       resolveRecoveredProviderCredit(),
     ]);
-    const newAlerts = [...failed, ...review, ...regression, ...silence, ...capsExceeded];
+    const newAlerts = [...failed, ...review, ...regression, ...silence, ...webhookHealth, ...capsExceeded];
 
     for (const a of newAlerts) {
       try {
         await createAlert(a);
-        if (config) await postWebhook(config, a);
       } catch (err) {
         console.error("create alert:", err);
       }
@@ -484,6 +578,7 @@ Deno.serve(async (req: Request) => {
           human_review_needed: review.length,
           outcomes_regression: regression.length,
           inbound_silence: silence.length,
+          kommo_webhook_health: webhookHealth.length,
           usage_cap_exceeded: capsExceeded.length,
           provider_credit_resolved: providerCreditResolved,
         },

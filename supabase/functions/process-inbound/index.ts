@@ -15,6 +15,7 @@ import { recordUsage } from "../_shared/usage.ts";
 import { fetchLeadHistory } from "../_shared/history.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 import { isCreditError, recordProviderCreditAlert, resolveProviderCreditAlert } from "../_shared/provider-errors.ts";
+import { logEvent } from "../_shared/system-log.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -626,22 +627,90 @@ function assertAllowedAudioUrl(raw: string): URL {
   return u;
 }
 
+// El adjunto de Kommo/amoCRM (amojo.kommo.com/...) SIEMPRE responde con una
+// CADENA de redirects (confirmado bajando audios reales: amojo.kommo.com →
+// drive-c.kommo.com → bucket firmado de Google Cloud Storage) — con
+// `redirect:"error"` el primer 3xx hace que fetch() RECHACE la promesa (no
+// un status !ok, un throw), así que TODA nota de voz fallaba el download el
+// 100% de las veces, no de forma transitoria. `redirect:"error"` en cada
+// salto seguía siendo necesario (anti-SSRF: un adjunto forjado no debe poder
+// re-dirigir a una IP interna), así que en vez de permitir redirecciones
+// libres (`redirect:"follow"`, que no valida destinos), inspeccionamos cada
+// 3xx a mano, validamos el destino contra el mismo allowlist, y seguimos
+// hasta MAX_REDIRECTS saltos.
+const AUDIO_REDIRECT_HOST_SUFFIXES = [...AUDIO_HOST_SUFFIXES, ".googleapis.com", ".google.com"];
+const MAX_AUDIO_REDIRECTS = 5;
+
+function assertAllowedRedirectUrl(raw: string, base: URL): URL {
+  let u: URL;
+  try {
+    u = new URL(raw, base);
+  } catch {
+    throw new Error("redirect a URL inválida");
+  }
+  if (u.protocol !== "https:") throw new Error("redirect a protocolo no-https");
+  const host = u.hostname.toLowerCase().replace(/\.$/, "");
+  if (/^[\d.]+$/.test(host) || host.includes(":")) throw new Error("redirect a host no permitido (IP literal)");
+  if (!AUDIO_REDIRECT_HOST_SUFFIXES.some((s) => host.endsWith(s) || host === s.slice(1))) {
+    throw new Error(`redirect a host no permitido: ${host}`);
+  }
+  return u;
+}
+
+async function fetchAudioFollowingRedirects(safeUrl: URL): Promise<Response> {
+  let current = safeUrl;
+  for (let hop = 0; hop <= MAX_AUDIO_REDIRECTS; hop++) {
+    const res = await fetch(current, { redirect: "manual" });
+    if (res.status < 300 || res.status >= 400) return res;
+    const location = res.headers.get("location");
+    if (!location) throw new Error(`redirect ${res.status} sin location`);
+    current = assertAllowedRedirectUrl(location, current);
+  }
+  throw new Error(`demasiadas redirecciones (>${MAX_AUDIO_REDIRECTS})`);
+}
+
+// Whisper valida el formato por la EXTENSIÓN del nombre de archivo del
+// multipart, no por los bytes reales. Kommo reporta en el payload un nombre
+// tipo "file.ogg" para la nota de voz, pero el archivo que realmente sirve
+// (tras los redirects, confirmado con audio real) viene transcodeado — p.ej.
+// `content-type: audio/mp4` / `content-disposition: filename="file.m4a"` —
+// así que confiar en el nombre de Kommo produce "Invalid file format" el
+// 100% de las veces. La extensión correcta sale de la respuesta real:
+// content-disposition primero, content-type como respaldo.
+const WHISPER_EXT_BY_CONTENT_TYPE: Record<string, string> = {
+  "audio/mpeg": "mp3", "audio/mp3": "mp3",
+  "audio/mp4": "m4a", "audio/x-m4a": "m4a",
+  "audio/ogg": "ogg", "audio/opus": "ogg",
+  "audio/wav": "wav", "audio/x-wav": "wav", "audio/wave": "wav",
+  "audio/webm": "webm",
+  "audio/flac": "flac", "audio/x-flac": "flac",
+};
+
+function pickAudioFilename(res: Response, fallback?: string): string {
+  const disposition = res.headers.get("content-disposition") ?? "";
+  const match = disposition.match(/filename="?([^";]+)"?/i);
+  if (match?.[1]) return match[1];
+  const contentType = (res.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+  const ext = WHISPER_EXT_BY_CONTENT_TYPE[contentType];
+  if (ext) return `audio.${ext}`;
+  return fallback || "audio.ogg";
+}
+
 async function transcribeAudio(
   openaiKey: string,
   url: string,
   filename?: string
 ): Promise<string | null> {
   const safeUrl = assertAllowedAudioUrl(url);
-  // redirect:"error" → un 3xx no puede re-dirigir el fetch a una IP interna
-  // después de la validación.
-  const audioRes = await fetch(safeUrl, { redirect: "error" });
+  const audioRes = await fetchAudioFollowingRedirects(safeUrl);
   if (!audioRes.ok) throw new Error(`audio download ${audioRes.status}`);
+  const resolvedFilename = pickAudioFilename(audioRes, filename);
   const blob = await audioRes.blob();
   if (blob.size === 0) throw new Error("audio vacío");
   if (blob.size > MAX_AUDIO_BYTES) throw new Error(`audio demasiado grande (${blob.size} bytes)`);
 
   const form = new FormData();
-  form.append("file", blob, filename || "audio.ogg");
+  form.append("file", blob, resolvedFilename);
   form.append("model", "whisper-1");
   const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
     method: "POST",
@@ -777,6 +846,12 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
       // ¿El adjunto es procesable y está habilitado?
       let mediaForClassify: MediaForClassify | null = null;
       let mediaIgnoreReason: string | null = null;
+      // La transcripción de un audio no viaja en mediaForClassify (no es un
+      // adjunto que Claude lea nativamente, es texto) — esta bandera es la
+      // única forma de saber, más abajo, que `text` trae una transcripción
+      // que hay que persistir en `content` para que el agente (y el próximo
+      // clasificador) la vean en el historial en vez del placeholder.
+      let audioTranscribed = false;
       if (media) {
         if (media.kind === "image") {
           if (filters.media.images)
@@ -799,11 +874,20 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
               const transcript = await transcribeAudio(openaiKey, media.source.url, media.filename);
               if (transcript) {
                 text = text ? `${text}\n🎙️ ${transcript}` : `🎙️ ${transcript}`;
+                audioTranscribed = true;
               } else {
                 mediaIgnoreReason = "media_audio_transcribe_failed";
               }
             } catch (err) {
-              console.error("whisper:", err instanceof Error ? err.message : String(err));
+              const detail = err instanceof Error ? err.message : String(err);
+              console.error("whisper:", detail);
+              // El motivo real (a diferencia de "media_audio_transcribe_failed",
+              // que es genérico) — sin esto, un fallo sistemático de Whisper
+              // (formato, red, cuota) se ve idéntico a uno transitorio y nadie
+              // se entera hasta que se acumulan revisiones humanas.
+              await logEvent(supabase, "process-inbound", "error", "whisper transcribe falló (hot path)", {
+                detail, media_url: media.source.url,
+              });
               mediaIgnoreReason = "media_audio_transcribe_failed";
             }
           } else {
@@ -1014,6 +1098,13 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
         if (mediaForClassify && cls.media_summary && cls.media_summary.trim()) {
           const desc = `[${mediaForClassify.label}] ${cls.media_summary.trim()}`;
           extra.content = text ? `${text}\n${desc}` : desc;
+        } else if (audioTranscribed) {
+          // Sin esto, `content` se queda para siempre en el placeholder
+          // "[Audio ...]" insertado antes de transcribir: el historial
+          // (fetchLeadHistory, que lee `content`) nunca vería lo que el
+          // cliente dijo por nota de voz, ni el agente ni el próximo
+          // clasificador — aunque Whisper haya transcrito bien.
+          extra.content = text;
         }
         // Vertical marcada "ignorar": guardamos clasificación (para registro y
         // analytics) pero el agente no responde ni manda a revisión humana.
@@ -1117,6 +1208,9 @@ async function recoverFailedClassifications(anthropic: Anthropic, operator: stri
 
     const runtimeCfg = await loadConfig(supabase);
     const classifyModel = runtimeCfg.getOr("CLASSIFY_MODEL", "claude-haiku-4-5");
+    // Necesaria para reintentar Whisper en audios cuya transcripción falló en
+    // el hot path (antes esos audios ni se intentaban de nuevo acá: ver abajo).
+    const openaiKey = runtimeCfg.get("OPENAI_API_KEY");
     const verticals = await getVerticals();
     const verticalsBySlug = new Map(verticals.map((v) => [v.slug, v]));
     let healed = 0;
@@ -1124,6 +1218,7 @@ async function recoverFailedClassifications(anthropic: Anthropic, operator: stri
     for (const msg of rows) {
       const isPlaceholder = /^\[(Imagen|Documento|Audio|Archivo)/.test(msg.content ?? "");
       let mediaForClassify: MediaForClassify | null = null;
+      let isAudioRetry = false;
       if (isPlaceholder) {
         if (msg.media_url && (msg.media_kind === "image" || msg.media_kind === "document")) {
           mediaForClassify = {
@@ -1131,8 +1226,17 @@ async function recoverFailedClassifications(anthropic: Anthropic, operator: stri
             label: msg.media_kind === "image" ? "Imagen" : "Documento",
             source: { type: "url", url: msg.media_url },
           };
+        } else if (msg.media_url && msg.media_kind === "audio") {
+          // Recuperable: reintentar Whisper (antes esto se daba por perdido
+          // en el primer intento con un mensaje genérico y engañoso — "sin
+          // URL procesable" — aunque la URL sí existiera; la falla real
+          // (timeout, hiccup transitorio de Whisper) quedaba oculta y el
+          // audio nunca se reintentaba, a diferencia de imagen/documento que
+          // sí tienen 5 reintentos).
+          isAudioRetry = true;
         } else {
-          // Adjunto irrecuperable (sin URL o tipo no procesable) → que lo vea un humano.
+          // Genuinamente irrecuperable: sin URL, o tipo de adjunto que nunca
+          // pudimos procesar (docx/xls/etc, `kind: "other"`).
           await supabase
             .from("messages")
             .update({ requires_human_review: true, classification: { error: "recover: adjunto sin URL procesable" } })
@@ -1140,8 +1244,14 @@ async function recoverFailedClassifications(anthropic: Anthropic, operator: stri
           continue;
         }
       }
-      const text = isPlaceholder ? "" : (msg.content ?? "");
+      let text = isPlaceholder && !isAudioRetry ? "" : (msg.content ?? "");
       try {
+        if (isAudioRetry) {
+          if (!openaiKey) throw new Error("sin OPENAI_API_KEY configurada");
+          const transcript = await transcribeAudio(openaiKey, msg.media_url as string, undefined);
+          if (!transcript) throw new Error("whisper devolvió transcripción vacía");
+          text = `🎙️ ${transcript}`;
+        }
         // Mismo contexto que el hot path: el reintento también desambigua con el
         // historial del lead (fail-soft: "" si falla). Antes reclasificaba sin él.
         const history = msg.lead_id
@@ -1156,6 +1266,11 @@ async function recoverFailedClassifications(anthropic: Anthropic, operator: stri
         const extra: Record<string, unknown> = {};
         if (mediaForClassify && cls.media_summary && cls.media_summary.trim()) {
           extra.content = `[${mediaForClassify.label}] ${cls.media_summary.trim()}`;
+        } else if (isAudioRetry) {
+          // Mismo motivo que en el hot path: sin esto el placeholder
+          // "[Audio ...]" queda para siempre y el historial nunca ve la
+          // transcripción recuperada.
+          extra.content = text;
         }
         if (v?.ignore) {
           await supabase
@@ -1202,7 +1317,13 @@ async function recoverFailedClassifications(anthropic: Anthropic, operator: stri
               }
             : { classification: { ...prevCls, recover_attempts: attempts } };
         await supabase.from("messages").update(update).eq("id", msg.id).is("vertical_id", null);
-        console.warn(`recover classify retry failed (intento ${attempts}/${RECOVER_MAX_ATTEMPTS}):`, e instanceof Error ? e.message : String(e));
+        const errDetail = e instanceof Error ? e.message : String(e);
+        console.warn(`recover classify retry failed (intento ${attempts}/${RECOVER_MAX_ATTEMPTS}):`, errDetail);
+        if (isAudioRetry) {
+          await logEvent(supabase, "process-inbound", attempts >= RECOVER_MAX_ATTEMPTS ? "error" : "warn",
+            `whisper transcribe falló (recover, intento ${attempts}/${RECOVER_MAX_ATTEMPTS})`,
+            { detail: errDetail, msg_id: msg.id, media_url: msg.media_url });
+        }
       }
     }
     if (healed > 0) console.log(`recoverFailedClassifications: ${healed} mensaje(s) recuperados`);
@@ -1359,8 +1480,15 @@ Deno.serve(async (req: Request) => {
         console.log(
           `drain: ${result.processed} ok, ${result.failed} fail, ${result.batches} batches, ${recovered} recuperados`
         );
+        if (result.failed > 0) {
+          await logEvent(supabase, "process-inbound", "warn", "drain con fallas", {
+            processed: result.processed, failed: result.failed, batches: result.batches, recovered,
+          });
+        }
       } catch (err) {
-        console.error("drain error:", err instanceof Error ? err.message : String(err));
+        const detail = err instanceof Error ? err.message : String(err);
+        console.error("drain error:", detail);
+        await logEvent(supabase, "process-inbound", "error", "drain crasheó", { detail });
       }
     })();
 

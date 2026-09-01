@@ -10,6 +10,7 @@
 //    KOMMO_WEBHOOK_SECRET está configurada, exigimos que coincida.)
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { logEvent } from "../_shared/system-log.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -138,6 +139,12 @@ Deno.serve(async (req: Request) => {
     const url = new URL(req.url);
     const provided = url.searchParams.get("secret") ?? req.headers.get("x-webhook-secret");
     if (provided !== WEBHOOK_SECRET) {
+      // No debería pasar nunca en operación normal — si empieza a aparecer,
+      // alguien cambió el secret en un lado y no en el otro (Kommo o
+      // runtime_config) y las entregas se están rechazando en silencio.
+      await logEvent(supabase, "kommo-webhook", "warn", "secret inválido — request rechazado", {
+        provided_len: provided?.length ?? 0,
+      });
       return new Response("forbidden", { status: 403 });
     }
   }
@@ -155,6 +162,9 @@ Deno.serve(async (req: Request) => {
 
     if (error) {
       console.error("inbound_queue insert error:", error);
+      await logEvent(supabase, "kommo-webhook", "error", "inbound_queue insert falló", {
+        error: error.message,
+      });
       return new Response(JSON.stringify({ ok: false, error: error.message }), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -173,6 +183,9 @@ Deno.serve(async (req: Request) => {
     });
   } catch (err) {
     console.error("kommo-webhook error:", err);
+    await logEvent(supabase, "kommo-webhook", "error", "excepción no controlada", {
+      error: err instanceof Error ? err.message : String(err),
+    });
     return new Response(JSON.stringify({ ok: false }), {
       status: 200,
       headers: { "content-type": "application/json" },
