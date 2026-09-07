@@ -268,15 +268,25 @@ Responde EXACTAMENTE en este formato y nada más:
   });
 
   // 3) Loop de eventos (mirrors generate-response)
-  let responseText = "";
+  //
+  // Precedencia del mensaje ETIQUETADO, por el mismo motivo que en
+  // generate-response: con "el último agent.message gana", un acuse interno
+  // posterior ("Memoria actualizada") pisaba la salida buena. Acá no podía
+  // filtrarse al cliente (el texto que se envía sale del template, y una
+  // salida sin <accion> se trata como skip), pero sí hacía perder el
+  // seguimiento EN SILENCIO: el <accion>send</accion> ya emitido desaparecía.
+  let ultimoEtiquetado = "";
+  let ultimoCualquiera = "";
   for await (const event of stream) {
     // deno-lint-ignore no-explicit-any
     const ev = event as any;
     if (ev.type === "agent.message") {
-      responseText = "";
+      let texto = "";
       for (const block of ev.content ?? []) {
-        if (block.type === "text") responseText += block.text;
+        if (block.type === "text") texto += block.text;
       }
+      ultimoCualquiera = texto;
+      if (/<accion>/i.test(texto)) ultimoEtiquetado = texto;
     } else if (ev.type === "session.status_idle") {
       const stop = ev.stop_reason?.type;
       if (stop !== "requires_action") break;
@@ -300,7 +310,7 @@ Responde EXACTAMENTE en este formato y nada más:
     pricingOverrideRaw: deps.pricingOverrideRaw,
   });
 
-  return responseText;
+  return ultimoEtiquetado || ultimoCualquiera;
 }
 
 // ---- Procesar un lead ----

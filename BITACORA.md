@@ -36,7 +36,15 @@ Para apagarlo: `/agent` → "Agente activo" (para todo) o "Publicar en Kommo"
   `agent-prompt-core.mjs`, y sincronizando con Anthropic.
 - **Prohibido TODO emoji** (trampa 15): regla en el prompt +
   `sanitizeEmojiForKommo`. **Instagram y WhatsApp SÍ son canales seguros** para
-  compartir cédula/teléfono/póliza (regla explícita tras un caso al revés).
+  compartir cédula/teléfono/póliza: se acepta todo lo que manden por ahí y NO se
+  ofrece la llamada como alternativa "más segura" (un dream lo había derogado,
+  trampa 36). Un teléfono o un correo se dan **una vez por conversación**.
+- **Reja antes de enviar** (trampa 35): `revisarMensajeFinal()` verifica que el
+  texto sea un mensaje para el cliente y no algo interno. Si es una **fuga**, se
+  le devuelve al agente en la misma sesión para que lo rehaga (2 vueltas máximo,
+  ver `correcciones_mensaje` en `agent_metadata`); si es un **silencio** no se
+  envía nada. Se revisa dos veces: al cerrar el turno y en `publish-to-kommo`.
+  Para callar a propósito, el agente emite `<respuesta></respuesta>` vacío.
 - **Tono concreto**: no cierra con preguntas redundantes; al escalar dice que
   un asesor ya tiene el caso y ofrece allanar o cotizar. Clientes molestos van
   al correo de ATC.
@@ -61,7 +69,9 @@ Para apagarlo: `/agent` → "Agente activo" (para todo) o "Publicar en Kommo"
 - **Dreams**: en español (forzado en system + reglas), frecuencia configurable
   desde `/dreams` con cron dinámico. Se listan en **tabla** ordenable por
   fecha/severidad/período/título, con buscador y paginación. El digest
-  (`DREAMS_DIGEST`) es rolling: ver trampa 17.
+  (`DREAMS_DIGEST`) es rolling: ver trampa 17. **Las reglas del operador viajan
+  al destilador y al consolidador**, y una segunda pasada audita el digest
+  contra ellas: un aprendizaje NO puede derogar una regla dura (trampa 36).
 
 ### Dashboard
 
@@ -234,7 +244,7 @@ GET https://api.anthropic.com/v1/agents/<ANTHROPIC_AGENT_ID>?beta=true
 ```
 
 Compara sus `tools` con `filterToolRowsByGates(agent_tools, kommo_publish_config)`
-y su `system` con `composeSystem(...)`. Al 07-09: 7 tools idénticas
+y su `system` con `composeSystem(...)`. Al 07-09 va en **v16**: 7 tools idénticas
 (`agent_toolset_20260401`, `search_kb`, `mover_etapa`, `marcar_perdido`,
 `actualizar_lead`, `actualizar_contacto`, `enviar_imagen`) y prompt idéntico.
 Las 5 de Shopify y `tasa_bcv` NO se declaran porque sus gates están apagados —
@@ -377,7 +387,9 @@ se hace desde `/agent`, y es lo que empuja el prompt).
     (la encadenada nunca se disparó en cron real). Preferir crons
     independientes de `pg_cron`, cada uno con su red de seguridad.
 17. **`DREAMS_DIGEST` es rolling**: borrar los dreams fuente NO borra lo
-    consolidado; hay que editar el digest.
+    consolidado, porque cada rebuild parte del digest anterior. Desde el 07-09
+    lo quita la **segunda pasada de auditoría** de `rebuildDigest` (trampa 36),
+    no una edición a mano.
 18. **Una función `immutable` llamada desde otra función o vista necesita el
     esquema explícito** (`public.zoho_cedula(...)`): se resuelve con el
     `search_path` de quien la crea. Falla con "does not exist" aunque exista.
@@ -529,6 +541,65 @@ se hace desde `/agent`, y es lo que empuja el prompt).
     señal disponible). Resultado: 56 marcas → 9, y 19 alertas → 2.
     Lección: una marca que se pone y nunca se quita deja de ser una señal.
 
+35. **"El último `agent.message` gana" le publicó al cliente el acuse interno
+    del agente.** Seis veces, todas `auto_sent` a clientes reales: dos con el
+    recibo de su propio trabajo ("Memoria actualizada. Respuesta enviada al
+    lead.", 20-08 y 03-09) y cuatro con su deliberación de NO responder ("Sin
+    respuesta automática. El lead está compartiendo reels…", "No hay respuesta
+    que enviar en este caso…"). El agente SÍ había redactado el mensaje bueno:
+    emitía su `<respuesta>`, después llamaba a las tools para escribir la
+    memoria, y cerraba narrando que había terminado — sin etiquetas. Ese último
+    mensaje pisaba al anterior y, al no haber tags, el fallback "usa el último
+    texto" lo tomaba tal cual. **Un fallback que acepta cualquier cosa no es un
+    fallback, es un agujero**: el formato correcto nunca fue obligatorio.
+    Tres capas, y la del medio es la que pedía el operador: el acumulador da
+    **precedencia al mensaje ETIQUETADO** (un acuse posterior ya no lo
+    desplaza); `revisarMensajeFinal()` (`_shared/mensaje-final.ts`) revisa el
+    texto **antes de enviarlo** y, si es una **fuga**, se lo DEVUELVE al agente
+    en la misma sesión con el motivo y el fragmento exacto para que lo rehaga
+    (hasta 2 vueltas, ~0 costo: el contexto y el trabajo interno ya están
+    hechos); y `publish-to-kommo` repite la revisión en el PATCH real, que es el
+    único punto por el que pasan todos los drafts, los de un humano incluidos.
+    La distinción **fuga vs. silencio** importa: ante una mención en un story,
+    callar YA era la decisión correcta, así que ahí no se pide reescribir —
+    hacerlo lo empujaría a inventar un mensaje. Para eso el prompt ahora tiene
+    dónde decirlo: `<respuesta></respuesta>` vacío.
+    Medido contra los 259 drafts históricos: 6 rechazos, los 6 verdaderos, **0
+    falsos positivos** en los 253 restantes. Lección: si el modelo decide el
+    formato, el código tiene que verificarlo — y a una cola de revisión ya
+    limpiada (trampa 34) solo se le mandan patrones inequívocos, nunca
+    heurísticas de estilo.
+
+36. **Un dream puede derogar una regla dura del prompt, y ganaba.** El operador
+    tenía escrito "Instagram y WhatsApp SÍ son canales seguros para la cédula —
+    NUNCA le digas que no lo haga". El agente hacía lo contrario ("Instagram no
+    es el canal más seguro para cédula; si lo prefieres, llama al 0501") porque
+    el dream del 28-08 había destilado "SIEMPRE advierte antes de solicitar
+    datos sensibles, o redirige a canal seguro" — y el digest se inyecta como
+    **prioridad máxima sobre la voz base**. Otros dos hacían lo mismo: uno pedía
+    "2-3 opciones numeradas con emoji" (el prompt prohíbe las dos cosas) y otro
+    ofrecer "siempre" la línea de emergencias (el prompt la limita a
+    emergencias médicas) — de ahí el "llama al call center" repetido turno tras
+    turno.
+    La causa está antes: **a `dreamPrompt` nunca se le pasaba el system prompt
+    del agente**, aunque se le pidiera detectar "violaciones de una regla de su
+    prompt". Sin la regla contra la que comparar, destilaba buenas prácticas
+    genéricas y las genéricas contradicen a un operador que decidió otra cosa.
+    El consolidador incluso **invertía** el sentido: del dream "el agente
+    prometió 24h y el back-office no cumplió" salió la viñeta "comunica SLA
+    máximo 24h", justo lo que el prompt prohíbe.
+    Arreglado en tres sitios: las reglas del operador viajan a `dreamPrompt` y
+    a `rebuildDigest` como vara de medir; el orden de prioridad del scaffold
+    pone las **reglas duras por encima de los dreams** (antes los dreams eran
+    el punto 1); y como pedir el filtro en la MISMA llamada que la consolidación
+    **no alcanza** —con 57 dreams y un tope de 900 palabras el digest salió
+    contradiciéndose a sí mismo, "nunca prometas 24 horas" y tres viñetas más
+    abajo "siempre agrega en máximo 24 horas"— hay una **segunda pasada** que
+    solo audita el digest ya escrito contra las reglas. Esa tarea chica sí
+    aplica el filtro. Pela el code fence en código, no pidiéndoselo al modelo.
+    Lección: un destilador al que no le das la política escribe la suya, y a la
+    tercera consolidación ya nadie sabe de dónde salió la regla.
+
 ---
 
 ## Cronología
@@ -556,7 +627,12 @@ se hace desde `/agent`, y es lo que empuja el prompt).
   Prompt del agente sincronizado (v15) tras verificar que el sync solo cambiaba
   esa línea. Tope de la bitácora subido de 500 a 700 líneas. Y se limpió la
   **cola de revisión humana**, que tenía 41% de ruido (trampa 34): 56 marcas →
-  9, 19 alertas → 2.
+  9, 19 alertas → 2. Al final del día, dos casos del operador destaparon las
+  **trampas 35 y 36**: el agente había publicado 6 veces su acuse interno (se
+  cerró con la reja de `revisarMensajeFinal()`, 0 falsos positivos en 259
+  drafts) y un dream derogaba la regla dura de que Instagram es canal seguro
+  para la cédula (se cerró dándole al destilador las reglas del operador y
+  auditando el digest contra ellas). Agente a **v16**.
 - **06-09**: módulo de **efectividad de corredores** (carga mensual con
   preview, `corredor_alias`, dos porcentajes declarados como suelo — trampas
   26-27; la primera versión daba 0,2% por medir la madurez contra `now()`),

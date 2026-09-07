@@ -40,6 +40,11 @@ import {
 } from "../_shared/business-hours.ts";
 import { fetchLeadHistory } from "../_shared/history.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
+import {
+  revisarMensajeFinal,
+  promptDeCorreccion,
+  type RechazoMensaje,
+} from "../_shared/mensaje-final.ts";
 
 // SUPABASE_URL and SERVICE_ROLE are injected by the Supabase runtime and
 // always come from env — they are infrastructure constants, not per-client
@@ -1186,7 +1191,7 @@ function buildContext(opts: {
   // Es contexto VERIFICADO de los turnos previos: el agente lo usa para no
   // repetir preguntas ni perder el hilo. Va antes del/los mensaje(s) nuevo(s).
   const historyBlock = opts.history
-    ? `[HISTORIAL RECIENTE DE LA CONVERSACIÓN — turnos ya intercambiados con este lead, en orden cronológico. Contexto verificado: tenelo en cuenta para responder con continuidad, no repitas lo ya dicho ni preguntes lo ya respondido]
+    ? `[HISTORIAL RECIENTE DE LA CONVERSACIÓN — turnos ya intercambiados con este lead, en orden cronológico. Contexto verificado: tenlo en cuenta para responder con continuidad, no repitas lo ya dicho ni preguntes lo ya respondido. En particular, un teléfono, un correo o una vía alterna que YA diste en este hilo NO se vuelve a dar: repetir "llama al call center" turno tras turno se lee como que no le quieres atender por aquí. Si ya lo dijiste una vez, sigue la conversación por donde está]
 """
 ${opts.history}
 """
@@ -1197,7 +1202,7 @@ ${opts.history}
   return `[CONTEXTO]
 fecha_hora_actual: ${opts.now} (zona horaria ${opts.timezone})
 en_horario_laboral: ${opts.businessHours.active ? "sí" : "no"} (${opts.businessHours.label}). Si es "no" y el lead necesita un asesor humano, avísale que el equipo lo contacta apenas retome el horario de atención — no prometas transferencia inmediata. Al escalar a un asesor (dentro o fuera de horario): afirma que ya queda en manos del equipo (o dale las opciones de autoservicio/línea si aplican) y CIERRA ahí — no agregues una pregunta de seguimiento después ("¿prefieres X o Y?", "¿necesitas resolverlo hoy?"); ya no hay nada que avanzar en esa respuesta. RECORDATORIO DURO: toda promesa de seguimiento humano ("el equipo te contacta", "voy a registrar tu caso") DEBE ir acompañada, en el mismo turno, de la tool mover_etapa — decirlo sin llamarla deja al cliente esperando a alguien que nunca se entera.
-${opts.dreamsDigest ? `aprendizajes_del_operador (reglas del operador aprendidas de conversaciones reales — PRIORIDAD MÁXIMA sobre tu voz base; aplícalas SIEMPRE):\n${opts.dreamsDigest}\n` : ""}${opts.activePromos ? `promociones_activas (menciónalas solo si vienen al caso de lo que pregunta el lead):\n${opts.activePromos}` : "promociones_activas: ninguna"}${opts.upcomingEvents ? `\neventos_proximos (puedes anticiparlos si aportan a la conversacion):\n${opts.upcomingEvents}` : ""}${opts.situaciones ? `\nsituaciones_actuales (contexto vigente que SIEMPRE debes tener en cuenta al responder, aunque el lead no pregunte por eso):\n${opts.situaciones}` : ""}${opts.commentInstructions != null ? `\norigen_comentario_instagram: sí — ${opts.commentInstructions}` : ""}${opts.mediaNoRenderizada ? `\nmensaje_no_renderizado: sí — el lead envió algo que Meta no pudo entregar (una nota de voz, un sticker, un post compartido o una respuesta a una historia): llegó vacío, así que NO sabes qué decía. Pídele en UNA frase, sin disculparte de más, que lo reenvíe como texto o foto. NO adivines de qué se trataba ni retomes el tema anterior como si lo hubiera dicho.` : ""}
+${opts.dreamsDigest ? `aprendizajes_del_operador (reglas destiladas de conversaciones reales — prioridad sobre tu voz base, aplícalas SIEMPRE, con UNA excepción: no levantan las reglas duras y no negociables de tu system prompt, las que dicen NUNCA/SIEMPRE/"REGLA DURA". Si un aprendizaje contradice una de esas, está mal destilado: descártalo):\n${opts.dreamsDigest}\n` : ""}${opts.activePromos ? `promociones_activas (menciónalas solo si vienen al caso de lo que pregunta el lead):\n${opts.activePromos}` : "promociones_activas: ninguna"}${opts.upcomingEvents ? `\neventos_proximos (puedes anticiparlos si aportan a la conversacion):\n${opts.upcomingEvents}` : ""}${opts.situaciones ? `\nsituaciones_actuales (contexto vigente que SIEMPRE debes tener en cuenta al responder, aunque el lead no pregunte por eso):\n${opts.situaciones}` : ""}${opts.commentInstructions != null ? `\norigen_comentario_instagram: sí — ${opts.commentInstructions}` : ""}${opts.mediaNoRenderizada ? `\nmensaje_no_renderizado: sí — el lead envió algo que Meta no pudo entregar (una nota de voz, un sticker, un post compartido o una respuesta a una historia): llegó vacío, así que NO sabes qué decía. Pídele en UNA frase, sin disculparte de más, que lo reenvíe como texto o foto. NO adivines de qué se trataba ni retomes el tema anterior como si lo hubiera dicho.` : ""}
 lead_id: ${opts.lead.id}
 lead_name: ${opts.lead.display_name ?? "(desconocido)"}
 vertical: ${opts.verticalSlug}
@@ -1246,7 +1251,28 @@ type Outcome = {
   durationMs: number;
   sessionId: string;
   imagesSent: string[];
+  /**
+   * Veredicto del validador cuando el mensaje NO se pudo aceptar. Con esto
+   * poblado, `responseText` viene vacío a propósito: nada se envía.
+   */
+  rechazo?: RechazoMensaje;
+  /** Cuántas veces se le devolvió el mensaje al agente para que lo rehiciera. */
+  correcciones: number;
 };
+
+// Vueltas que se le conceden al agente para rehacer un mensaje rechazado, en la
+// MISMA sesión (no cuesta una corrida nueva: el contexto y el trabajo interno
+// ya están hechos, solo redacta otra vez). Dos alcanzan: el rechazo describe el
+// problema con el fragmento exacto, y si a la segunda sigue filtrando lo
+// interno, insistir es peor que llamar a un humano.
+const MAX_CORRECCIONES = 2;
+
+// Tope de reloj para pedir una corrección. Una corrida son 60-80s y cada
+// corrección suma un turno; sin este freno, dos seguidas pueden llevar la
+// sesión al límite del runtime y dejar el draft colgado en 'pending'.
+// Quedarse sin presupuesto NO relaja la reja: se corta con el rechazo puesto y
+// no se envía nada — el único camino que publica es el que pasa el validador.
+const CORRECCION_BUDGET_MS = 120_000;
 
 async function runAgent(opts: {
   leadId: string;
@@ -1312,20 +1338,41 @@ async function runAgent(opts: {
   });
 
   // 3) Loop de eventos
-  let responseText = "";
+  //
+  // DOS acumuladores, no uno. Antes había solo "el último agent.message gana",
+  // y eso fue la causa de que se publicaran acuses internos al cliente
+  // (2026-08-20 y 2026-09-03, ver _shared/mensaje-final.ts): el agente emitía
+  // su <respuesta> buena, después llamaba a las tools para escribir la memoria,
+  // y cerraba con un "Memoria actualizada. Respuesta enviada al lead." SIN
+  // etiquetas — que pisaba al anterior y, al no haber tags, el fallback lo
+  // tomaba tal cual. Ahora el mensaje ETIQUETADO tiene precedencia: el acuse
+  // posterior no puede desplazarlo.
+  let ultimoEtiquetado = "";
+  let ultimoCualquiera = "";
   let toolCalls = 0;
+  let correcciones = 0;
+  let rechazo: RechazoMensaje | undefined;
   const imagesSent: string[] = [];
+
+  // Lo que de verdad se enviaría: el bloque <respuesta> si existe, y si no el
+  // último texto (fallback histórico, el que dejaba pasar las fugas — de ahí
+  // que el validador de abajo sea obligatorio).
+  const candidato = () => {
+    const fuente = ultimoEtiquetado || ultimoCualquiera;
+    const match = fuente.match(/<respuesta>([\s\S]*?)<\/respuesta>/i);
+    return sanitizeEmojiForKommo((match ? match[1] : fuente).trim());
+  };
 
   for await (const event of stream) {
     // deno-lint-ignore no-explicit-any
     const ev = event as any;
     if (ev.type === "agent.message") {
-      // Reset: nos quedamos con el ÚLTIMO agent.message
-      // (mensajes intermedios suelen ser razonamiento previo a tool calls)
-      responseText = "";
+      let texto = "";
       for (const block of ev.content ?? []) {
-        if (block.type === "text") responseText += block.text;
+        if (block.type === "text") texto += block.text;
       }
+      ultimoCualquiera = texto;
+      if (/<respuesta>[\s\S]*?<\/respuesta>/i.test(texto)) ultimoEtiquetado = texto;
     } else if (ev.type === "agent.custom_tool_use") {
       toolCalls++;
       try {
@@ -1412,7 +1459,50 @@ async function runAgent(opts: {
       }
     } else if (ev.type === "session.status_idle") {
       const stop = ev.stop_reason?.type;
-      if (stop !== "requires_action") break;
+      if (stop === "requires_action") continue; // quedan tools por resolver
+
+      // ---- REJA ANTES DE ENVIAR ----
+      // El turno se cerró: acá se decide si este texto es un mensaje para el
+      // cliente o algo interno. Un rechazo NO sale al canal.
+      const texto = candidato();
+      const veredicto = revisarMensajeFinal(texto);
+      if (!veredicto) break; // pasó: es un mensaje para el cliente
+
+      // `silencio`: el agente concluyó que no había nada que contestar (una
+      // mención en un story, publicidad de terceros). Esa decisión es correcta
+      // y se respeta — pedirle que reescriba lo empujaría a inventar un
+      // mensaje. Se corta acá y el caso lo resuelve el manejo de vacío.
+      const sinPresupuesto = Date.now() - start >= CORRECCION_BUDGET_MS;
+      if (
+        veredicto.tipo === "silencio" ||
+        correcciones >= MAX_CORRECCIONES ||
+        sinPresupuesto
+      ) {
+        if (sinPresupuesto && veredicto.tipo === "fuga") {
+          console.warn("mensaje final rechazado sin presupuesto para corregir; no se envía nada");
+        }
+        rechazo = veredicto;
+        ultimoEtiquetado = "";
+        ultimoCualquiera = "";
+        break;
+      }
+
+      // `fuga`: se le DEVUELVE al agente, en esta misma sesión, con el motivo y
+      // el fragmento exacto, para que rehaga el mensaje.
+      correcciones++;
+      console.warn(
+        `mensaje final rechazado (${veredicto.motivo}) — devuelto al agente, corrección ${correcciones}/${MAX_CORRECCIONES}: "${veredicto.fragmento}"`
+      );
+      ultimoEtiquetado = "";
+      ultimoCualquiera = "";
+      await opts.anthropic.beta.sessions.events.send(session.id, {
+        events: [
+          {
+            type: "user.message",
+            content: [{ type: "text", text: promptDeCorreccion(veredicto) }],
+          },
+        ],
+      });
     } else if (ev.type === "session.status_terminated") {
       break;
     } else if (ev.type === "session.error") {
@@ -1421,18 +1511,15 @@ async function runAgent(opts: {
     }
   }
 
-  // Extraer SOLO lo que está dentro de <respuesta>...</respuesta>.
-  // Si no hay tags, usar el último texto (fallback).
-  const match = responseText.match(/<respuesta>([\s\S]*?)<\/respuesta>/i);
-  const clean = sanitizeEmojiForKommo((match ? match[1] : responseText).trim());
-
   return {
-    responseText: clean,
-    rawResponseText: responseText.trim(),
+    responseText: candidato(),
+    rawResponseText: (ultimoEtiquetado || ultimoCualquiera).trim(),
     toolCalls,
     durationMs: Date.now() - start,
     sessionId: session.id,
     imagesSent,
+    rechazo,
+    correcciones,
   };
 }
 
@@ -1743,9 +1830,15 @@ Deno.serve(async (req: Request) => {
       // vacío, el draft se marca fallido igual pero además los mensajes del
       // batch pasan a revisión humana: así el caso aparece en la cola de un
       // asesor en vez de desaparecer.
+      //
+      // Un rechazo del validador (`outcome.rechazo`) llega acá con responseText
+      // vacío y comparte el destino —nada se envía, el caso queda visible— pero
+      // NO se reintenta: el agente ya tuvo sus vueltas de corrección dentro de
+      // la sesión, y si el veredicto fue `silencio` la corrida nueva volvería a
+      // concluir, con razón, que no había nada que contestar.
       if (!outcome.responseText) {
         const gastado = Date.now() - slowStart;
-        if (gastado < EMPTY_RETRY_BUDGET_MS) {
+        if (!outcome.rechazo && gastado < EMPTY_RETRY_BUDGET_MS) {
           console.warn(`agent devolvió respuesta vacía; reintento único (gastado ${gastado}ms)`);
           outcome = await runAgent({
             leadId: batch.leadId,
@@ -1775,7 +1868,11 @@ Deno.serve(async (req: Request) => {
           // vacío es la respuesta correcta y no hay nada que revisar: se
           // registra y se acaba. Solo si algún mensaje pedía algo se convoca a
           // un humano.
-          const todoAcuses = batchMsgs.every((m: MsgRow) => esCierreOAcuse(m.content));
+          // Un veredicto `silencio` es la misma situación por otra vía: el
+          // agente decidió, con razón, que no había nada que contestar.
+          const todoAcuses =
+            outcome.rechazo?.tipo === "silencio" ||
+            batchMsgs.every((m: MsgRow) => esCierreOAcuse(m.content));
           if (!todoAcuses) {
             // Fail-soft: si marcar la revisión falla, igual queremos el error
             // original en el draft, así que no se propaga.
@@ -1788,14 +1885,20 @@ Deno.serve(async (req: Request) => {
               console.warn("marcar revisión humana tras respuesta vacía:", revErr);
             }
           }
+          const rech = outcome.rechazo;
           throw new Error(
-            todoAcuses
-              ? "agent devolvió respuesta vacía ante un cierre del lead (\"" +
-                String(batchMsgs[batchMsgs.length - 1]?.content ?? "").slice(0, 40) +
-                "\"): es la respuesta correcta, no se marca revisión"
-              : gastado < EMPTY_RETRY_BUDGET_MS
-                ? "agent devolvió respuesta vacía dos veces; batch enviado a revisión humana"
-                : "agent devolvió respuesta vacía y no quedaba tiempo para reintentar; batch enviado a revisión humana"
+            rech
+              ? `mensaje final rechazado por el validador (${rech.tipo}): ${rech.motivo} — fragmento "${rech.fragmento}". ` +
+                (rech.tipo === "silencio"
+                  ? "El agente decidió no responder: nada se envió y no se marca revisión."
+                  : `Nada se envió tras ${outcome.correcciones} corrección(es); batch enviado a revisión humana.`)
+              : todoAcuses
+                ? "agent devolvió respuesta vacía ante un cierre del lead (\"" +
+                  String(batchMsgs[batchMsgs.length - 1]?.content ?? "").slice(0, 40) +
+                  "\"): es la respuesta correcta, no se marca revisión"
+                : gastado < EMPTY_RETRY_BUDGET_MS
+                  ? "agent devolvió respuesta vacía dos veces; batch enviado a revisión humana"
+                  : "agent devolvió respuesta vacía y no quedaba tiempo para reintentar; batch enviado a revisión humana"
           );
         }
       }
@@ -1884,6 +1987,9 @@ Deno.serve(async (req: Request) => {
             duration_ms: outcome.durationMs,
             model: resolvedCfg.getOr("AGENT_MODEL", "claude-sonnet-4-6"),
             vertical: vertical.slug,
+            // Cuántas veces el validador devolvió el mensaje al agente antes de
+            // aceptarlo. >0 significa que la reja actuó y funcionó.
+            ...(outcome.correcciones > 0 ? { correcciones_mensaje: outcome.correcciones } : {}),
             ...(batchHasComment ? { from_comment: true } : {}),
             ...(publicReply ? { public_reply: publicReply } : {}),
             ...(outcome.imagesSent.length > 0 ? { images_sent: outcome.imagesSent } : {}),

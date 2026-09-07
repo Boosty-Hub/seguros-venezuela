@@ -16,6 +16,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { loadConfig } from "../_shared/config.ts";
 import { patchLeadField, runSalesbot, fetchLeadStage, KOMMO_WON_STATUS, KOMMO_LOST_STATUS } from "../_shared/kommo.ts";
+import { revisarMensajeFinal } from "../_shared/mensaje-final.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -171,17 +172,30 @@ Deno.serve(async (req: Request) => {
     const errors: Array<{ draft_id: string; error: string }> = [];
 
     for (const d of pending) {
-      // Un body vacío no se publica: mandaría un mensaje en blanco al cliente.
-      // Es terminal — reintentar no lo va a llenar.
-      if (!String(d.body ?? "").trim()) {
+      // ---- ÚLTIMA REJA ANTES DE ENVIAR ----
+      // Este es el punto donde el texto sale de verdad al cliente, y es el
+      // único por el que pasan TODOS los drafts: los del agente, los que
+      // aprobó o editó un humano en /inbox, y los de cualquier productor
+      // futuro. Por eso la revisión se repite acá aunque generate-response ya
+      // la haya hecho: defensa en profundidad sobre el envío real.
+      //
+      // Los dos motivos son terminales — reintentar no arregla ni un body
+      // vacío ni un texto interno; hace falta que alguien redacte otro.
+      const bodyTexto = String(d.body ?? "").trim();
+      const veredicto = bodyTexto ? revisarMensajeFinal(bodyTexto) : null;
+      if (!bodyTexto || veredicto) {
+        const motivo = veredicto
+          ? `no es un mensaje para el cliente (${veredicto.tipo}): ${veredicto.motivo} — fragmento "${veredicto.fragmento}"`
+          : "body vacío — no se publica";
         await supabase
           .from("drafts")
           .update({
             status: "failed",
-            agent_metadata: { ...(d.agent_metadata ?? {}), publish_error: "body vacío — no se publica" },
+            agent_metadata: { ...(d.agent_metadata ?? {}), publish_error: motivo },
           })
           .eq("id", d.id);
-        errors.push({ draft_id: d.id, error: "body vacío" });
+        console.warn(`publish-to-kommo: draft ${d.id} bloqueado antes de enviar — ${motivo}`);
+        errors.push({ draft_id: d.id, error: motivo });
         failed++;
         continue;
       }
