@@ -293,10 +293,19 @@ bajó de 1.500-1.800ms a 765-810ms con la vista materializada. Netlify devuelve
    ya pasaron tres semanas. Incluyen dos cancelaciones de póliza y un "no me
    iré con ustedes entonces".
 12. ~~Sincronizar el prompt~~ **HECHO el 07-09**: el agente vivo está en la
-   versión 15 con la regla "no des por supuesto ningún dato que el lead no haya
-   dicho", y el diff entre `agent-prompt-core.mjs` y el prompt del Managed Agent
-   es de **cero líneas en los dos sentidos**. Ver "Sincronizar el prompt" más
-   abajo para cómo se hace y cómo verificarlo.
+   versión **16** (v15 fue la regla "no des por supuesto ningún dato que el lead
+   no haya dicho"; v16, la reja de envío y la prioridad de las reglas duras), y
+   el diff entre `agent-prompt-core.mjs` y el prompt del Managed Agent es de
+   **cero líneas en los dos sentidos**. Ver "Sincronizar el prompt" más abajo
+   para cómo se hace y cómo verificarlo.
+13. **Que un mensaje rechazado por la reja levante alerta en la Torre**
+   (trampa 35). Hoy queda en `agent_metadata.correcciones_mensaje`, en el
+   `publish_error` del draft y en el log, pero **nada avisa**: los 6 acuses
+   internos se enviaron y nadie se enteró hasta que el operador los vio en
+   pantalla. Un rechazo `fuga` es justo la señal que sí hay que mirar (es raro:
+   6 en 259 drafts), y el `silencio` no debería alertar para no repetir la
+   trampa 34. Falta decidir si va como alerta de `alerts-scan` o como contador
+   en `/inbox`.
 
 **Vencimientos:** token de Kommo **2027-10-30** (ese día deja de crearse
 cualquier lead). Refresh token de Zoho sin caducidad conocida, pero revocable.
