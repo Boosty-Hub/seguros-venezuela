@@ -49,6 +49,51 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 // Presupuesto para el reintento por respuesta vacía del agente: una corrida
 // son 60-80s, así que solo se reintenta si no se han gastado ya ~100s.
 const EMPTY_RETRY_BUDGET_MS = 100_000;
+
+/**
+ * ¿El mensaje del lead es un cierre o acuse, sin pregunta ni dato nuevo?
+ *
+ * Importa para decidir qué hacer cuando el agente devuelve texto vacío. Ante un
+ * "Ok gracias" que cierra la conversación, vacío es la respuesta CORRECTA: no
+ * hay nada que contestar y mandar algo sería ruido. Marcarlo para revisión
+ * humana generaba trabajo falso (visto en producción: la conversación de COACH
+ * Mildred Gomez entró a la cola de revisión sin necesitarlo).
+ *
+ * Solo cuando el mensaje SÍ pedía algo y el agente calló hay un problema real
+ * que un asesor tiene que recoger.
+ */
+function esCierreOAcuse(texto: string | null | undefined): boolean {
+  const t = String(texto ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")   // quita emojis y puntuacion
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // Sin texto (solo emojis o puntuacion) no hay nada que responder.
+  if (!t) return true;
+  // Una pregunta nunca es un cierre, por corta que sea.
+  if (/\?/.test(String(texto ?? ""))) return false;
+  // Más de 6 palabras ya suele traer contenido.
+  if (t.split(" ").length > 6) return false;
+
+  // Una sola palabra por entrada: la comprobacion de abajo es palabra por
+  // palabra, asi que "muchas gracias" como entrada compuesta nunca casaria.
+  // Por eso estan tambien los intensificadores y conectores ("muchas", "mil",
+  // "de", "un"), que en un mensaje de <=6 palabras y sin "?" solo aparecen
+  // acompanando a un acuse.
+  const ACUSES = [
+    "ok", "oka", "okey", "okay", "vale", "dale", "listo", "bien", "perfecto",
+    "gracias", "grax", "ya", "entendido", "excelente", "genial", "buenisimo",
+    "chevere", "correcto", "si", "no", "amen", "bendiciones", "saludos",
+    "igualmente", "placer", "acuerdo",
+    "muchas", "mil", "muy", "super", "de", "un", "una", "todo", "bueno",
+  ];
+  // Todas las palabras tienen que ser de acuse: "ok gracias" sí, "ok y el
+  // precio" no.
+  return t.split(" ").every((w) => ACUSES.includes(w));
+}
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, {
@@ -1114,6 +1159,8 @@ function buildContext(opts: {
   upcomingEvents: string | null;
   situaciones: string | null;
   commentInstructions?: string | null;
+  /** El batch trae un mensaje que Meta no pudo renderizar (ver process-inbound). */
+  mediaNoRenderizada?: boolean;
   // Digest de aprendizajes (dreams) consolidado por dreams-run en
   // runtime_config.DREAMS_DIGEST. Reemplaza la lectura de /dreams/ por
   // filesystem en cada sesión (231 archivos llegaron a costar listados +
@@ -1150,7 +1197,7 @@ ${opts.history}
   return `[CONTEXTO]
 fecha_hora_actual: ${opts.now} (zona horaria ${opts.timezone})
 en_horario_laboral: ${opts.businessHours.active ? "sí" : "no"} (${opts.businessHours.label}). Si es "no" y el lead necesita un asesor humano, avísale que el equipo lo contacta apenas retome el horario de atención — no prometas transferencia inmediata. Al escalar a un asesor (dentro o fuera de horario): afirma que ya queda en manos del equipo (o dale las opciones de autoservicio/línea si aplican) y CIERRA ahí — no agregues una pregunta de seguimiento después ("¿prefieres X o Y?", "¿necesitas resolverlo hoy?"); ya no hay nada que avanzar en esa respuesta. RECORDATORIO DURO: toda promesa de seguimiento humano ("el equipo te contacta", "voy a registrar tu caso") DEBE ir acompañada, en el mismo turno, de la tool mover_etapa — decirlo sin llamarla deja al cliente esperando a alguien que nunca se entera.
-${opts.dreamsDigest ? `aprendizajes_del_operador (reglas del operador aprendidas de conversaciones reales — PRIORIDAD MÁXIMA sobre tu voz base; aplícalas SIEMPRE):\n${opts.dreamsDigest}\n` : ""}${opts.activePromos ? `promociones_activas (menciónalas solo si vienen al caso de lo que pregunta el lead):\n${opts.activePromos}` : "promociones_activas: ninguna"}${opts.upcomingEvents ? `\neventos_proximos (puedes anticiparlos si aportan a la conversacion):\n${opts.upcomingEvents}` : ""}${opts.situaciones ? `\nsituaciones_actuales (contexto vigente que SIEMPRE debes tener en cuenta al responder, aunque el lead no pregunte por eso):\n${opts.situaciones}` : ""}${opts.commentInstructions != null ? `\norigen_comentario_instagram: sí — ${opts.commentInstructions}` : ""}
+${opts.dreamsDigest ? `aprendizajes_del_operador (reglas del operador aprendidas de conversaciones reales — PRIORIDAD MÁXIMA sobre tu voz base; aplícalas SIEMPRE):\n${opts.dreamsDigest}\n` : ""}${opts.activePromos ? `promociones_activas (menciónalas solo si vienen al caso de lo que pregunta el lead):\n${opts.activePromos}` : "promociones_activas: ninguna"}${opts.upcomingEvents ? `\neventos_proximos (puedes anticiparlos si aportan a la conversacion):\n${opts.upcomingEvents}` : ""}${opts.situaciones ? `\nsituaciones_actuales (contexto vigente que SIEMPRE debes tener en cuenta al responder, aunque el lead no pregunte por eso):\n${opts.situaciones}` : ""}${opts.commentInstructions != null ? `\norigen_comentario_instagram: sí — ${opts.commentInstructions}` : ""}${opts.mediaNoRenderizada ? `\nmensaje_no_renderizado: sí — el lead envió algo que Meta no pudo entregar (una nota de voz, un sticker, un post compartido o una respuesta a una historia): llegó vacío, así que NO sabes qué decía. Pídele en UNA frase, sin disculparte de más, que lo reenvíe como texto o foto. NO adivines de qué se trataba ni retomes el tema anterior como si lo hubiera dicho.` : ""}
 lead_id: ${opts.lead.id}
 lead_name: ${opts.lead.display_name ?? "(desconocido)"}
 vertical: ${opts.verticalSlug}
@@ -1613,6 +1660,13 @@ Deno.serve(async (req: Request) => {
       // inyectamos comment_instructions al agente. LÍNEA ROJA: solo esto cambia
       // del flujo normal (sweep/debounce/guardas/promos/usage intactos).
       const batchHasComment = batchMsgs.some((m) => m.is_comment === true);
+      // process-inbound marca así los mensajes que Meta no pudo renderizar: no
+      // se clasifican (no hay contenido) pero SÍ se responden, pidiendo el
+      // reenvío. Sin esta instrucción el agente inventaba una respuesta al
+      // texto literal del placeholder.
+      const mediaNoRenderizada = batchMsgs.some(
+        (m) => (m.classification as Record<string, unknown> | null)?.placeholder_plataforma === true
+      );
       let commentInstructions: string | null = null;
       if (batchHasComment) {
         const rawInstructions = (cfg as Record<string, unknown> | null)?.comment_instructions;
@@ -1653,6 +1707,7 @@ Deno.serve(async (req: Request) => {
         upcomingEvents: promoCtx.upcomingEvents,
         situaciones: situacionesCtx,
         commentInstructions,
+        mediaNoRenderizada,
         dreamsDigest: (resolvedCfg.get("DREAMS_DIGEST") ?? "").trim() || null,
       });
 
@@ -1716,20 +1771,31 @@ Deno.serve(async (req: Request) => {
           });
         }
         if (!outcome.responseText) {
-          // Fail-soft: si marcar la revisión falla, igual queremos el error
-          // original en el draft, así que no se propaga.
-          try {
-            await supabase
-              .from("messages")
-              .update({ requires_human_review: true })
-              .in("id", batchMsgs.map((m: MsgRow) => m.id));
-          } catch (revErr) {
-            console.warn("marcar revisión humana tras respuesta vacía:", revErr);
+          // Si TODO el batch son cierres o acuses ("Ok gracias", un emoji),
+          // vacío es la respuesta correcta y no hay nada que revisar: se
+          // registra y se acaba. Solo si algún mensaje pedía algo se convoca a
+          // un humano.
+          const todoAcuses = batchMsgs.every((m: MsgRow) => esCierreOAcuse(m.content));
+          if (!todoAcuses) {
+            // Fail-soft: si marcar la revisión falla, igual queremos el error
+            // original en el draft, así que no se propaga.
+            try {
+              await supabase
+                .from("messages")
+                .update({ requires_human_review: true })
+                .in("id", batchMsgs.map((m: MsgRow) => m.id));
+            } catch (revErr) {
+              console.warn("marcar revisión humana tras respuesta vacía:", revErr);
+            }
           }
           throw new Error(
-            gastado < EMPTY_RETRY_BUDGET_MS
-              ? "agent devolvió respuesta vacía dos veces; batch enviado a revisión humana"
-              : "agent devolvió respuesta vacía y no quedaba tiempo para reintentar; batch enviado a revisión humana"
+            todoAcuses
+              ? "agent devolvió respuesta vacía ante un cierre del lead (\"" +
+                String(batchMsgs[batchMsgs.length - 1]?.content ?? "").slice(0, 40) +
+                "\"): es la respuesta correcta, no se marca revisión"
+              : gastado < EMPTY_RETRY_BUDGET_MS
+                ? "agent devolvió respuesta vacía dos veces; batch enviado a revisión humana"
+                : "agent devolvió respuesta vacía y no quedaba tiempo para reintentar; batch enviado a revisión humana"
           );
         }
       }

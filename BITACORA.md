@@ -98,14 +98,16 @@ Para apagarlo: `/agent` → "Agente activo" (para todo) o "Publicar en Kommo"
 
 ### Alertas abiertas
 
-**19 abiertas al 07-09** (eran 23): **17 `human_review_needed`** — gap de
-**proceso**, no de código: requieren un humano en Kommo (Andrea desde el 26/08,
-5 de Andrés Ramírez del 27/08, y 3 conversaciones que el agente dejó mudas por
-la trampa 32). Y **2 `dream_error`**: uno es el agente asumiendo datos no
-dichos por la clienta (corregido en el prompt, pendiente de sincronizar —
-PENDIENTE 12) y el otro son errores HMAC **en la app del cliente**.
+**2 abiertas al 07-09** (eran 23), las dos `dream_error`: uno era el agente
+asumiendo datos no dichos por la clienta (ya corregido en el prompt y
+sincronizado, v15) y el otro son errores HMAC **en la app del cliente**, no
+aquí.
 
-Las 5 restantes se cerraron el 06-09 con su causa arreglada (trampas 31-32).
+Las 21 restantes se cerraron con su causa arreglada: trampas 31-32 el 06-09, y
+el 07-09 la **limpieza de la cola de revisión** (trampa 34) cerró 17 de golpe.
+Quedan **9 mensajes** marcados para revisión y son legítimos: del 17-19 de
+agosto, del apagón de saldo (trampa 30), y nunca recibieron respuesta — alguien
+tiene que decidir si a estas alturas se contacta a esa gente (PENDIENTE 11).
 **Sin webhook de salida** (`alert_config`): nunca se usó, la `0070` tiró la
 tabla. La Torre filtra por `acknowledged_at is null`, **no** por `status`. Y
 **se auto-resuelven** cuando su causa desaparece, en vez de quedarse en rojo:
@@ -276,8 +278,10 @@ bajó de 1.500-1.800ms a 765-810ms con la vista materializada. Netlify devuelve
    de la 0077). Con un solo mes, los dos porcentajes son un suelo (trampa 26).
 10. **Borrar el usuario de prueba** `prueba.e2e@segurosvenezuela.com` (editor)
    cuando no se necesite. Credenciales en `web/.env.local`, no versionado.
-11. Atender en Kommo las **17 alertas `human_review_needed`**, que incluyen las
-   3 conversaciones que el agente dejó muda por devolver vacío (trampa 32).
+11. Decidir qué hacer con los **9 mensajes que siguen en revisión**: son del
+   17-19 de agosto (apagón de saldo, trampa 30), nunca recibieron respuesta y
+   ya pasaron tres semanas. Incluyen dos cancelaciones de póliza y un "no me
+   iré con ustedes entonces".
 12. ~~Sincronizar el prompt~~ **HECHO el 07-09**: el agente vivo está en la
    versión 15 con la regla "no des por supuesto ningún dato que el lead no haya
    dicho", y el diff entre `agent-prompt-core.mjs` y el prompt del Managed Agent
@@ -500,6 +504,31 @@ se hace desde `/agent`, y es lo que empuja el prompt).
     all from anon` + quitarlo del default privilege. **Al crear una vista sobre
     datos personales, comprobar con la clave anon que devuelve 401.**
 
+34. **Una cola de revisión humana con 41% de ruido es una cola que nadie mira.**
+    Había 56 mensajes marcados para revisión y 17 alertas sin atender desde el
+    26 de agosto. Al clasificarlos: **15 eran una sola cadena literal**,
+    `"The message could not be displayed due to API restrictions"` — el relleno
+    que manda Meta cuando no puede renderizar un mensaje (sticker, nota de voz,
+    post compartido). Llegaba sin contenido al clasificador, que adivinaba por
+    el historial y lo repartía entre 4 verticales con urgencia hasta 5. Otros 4
+    eran acuses ("Ok.", "Edpero reespuesta ."): la urgency se heredaba del hilo,
+    así que un "ok." dentro de un reclamo furioso salía urgency 4. Y 3 los había
+    puesto la propia regla de "respuesta vacía" (trampa 32) sobre **"Amén 🙏",
+    "Gracias" y "Ok gracias"** — los tres cierres de conversación, donde vacío
+    ES la respuesta correcta: 100% de falsos positivos.
+    Cuatro arreglos: el placeholder de Meta se reconoce ANTES de clasificar (no
+    gasta Haiku, no va a revisión, y el agente pide que lo reenvíen, porque el
+    cliente sí mandó algo); la regla del clasificador exige que la queja aporte
+    **información nueva** y que urgency/toxicity se juzguen del mensaje nuevo y
+    no del historial; la de respuesta vacía solo convoca a un humano si el
+    mensaje pedía algo (`esCierreOAcuse()`); y la marca deja de ser permanente:
+    `limpiarRevisionesAtendidas()` la levanta cuando la conversación ya recibió
+    respuesta del agente o un humano movió el lead en Kommo
+    (`lead_stage_events.moved_by='kommo'` — las respuestas que escribe un asesor
+    en Kommo NO llegan a nuestra DB, así que un movimiento manual es la mejor
+    señal disponible). Resultado: 56 marcas → 9, y 19 alertas → 2.
+    Lección: una marca que se pone y nunca se quita deja de ser una señal.
+
 ---
 
 ## Cronología
@@ -525,7 +554,9 @@ se hace desde `/agent`, y es lo que empuja el prompt).
   sin fallos, 0 pendientes en los embudos). Destapó la **fuga de las vistas**
   (trampa 33) y se cerró. Contador de mensajes por conversación en `/inbox`.
   Prompt del agente sincronizado (v15) tras verificar que el sync solo cambiaba
-  esa línea. Tope de la bitácora subido de 500 a 700 líneas.
+  esa línea. Tope de la bitácora subido de 500 a 700 líneas. Y se limpió la
+  **cola de revisión humana**, que tenía 41% de ruido (trampa 34): 56 marcas →
+  9, 19 alertas → 2.
 - **06-09**: módulo de **efectividad de corredores** (carga mensual con
   preview, `corredor_alias`, dos porcentajes declarados como suelo — trampas
   26-27; la primera versión daba 0,2% por medir la madurez contra `now()`),

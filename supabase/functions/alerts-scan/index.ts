@@ -99,6 +99,94 @@ async function detectFailedDrafts(): Promise<AlertInput[]> {
     });
 }
 
+// ---- Limpieza de la cola de revision ya atendida ----
+// La marca `requires_human_review` era PERMANENTE: una vez puesta, la
+// conversacion se quedaba con el badge en /inbox y su alerta abierta para
+// siempre, aunque el caso ya estuviera resuelto. Con 17 alertas viejas
+// acumuladas, la Torre entrena a no mirarla.
+//
+// Se considera atendida cuando, DESPUES del mensaje marcado, pasa una de dos
+// cosas:
+//   * El agente respondio (un draft `auto_sent` en esa conversacion).
+//   * Un humano movio el lead en Kommo (`lead_stage_events.moved_by='kommo'`).
+//     Las respuestas que un asesor escribe en Kommo NO llegan a nuestra DB
+//     —`messages` solo guarda entrantes— asi que un movimiento manual de etapa
+//     es la mejor senal disponible de que una persona tomo el caso. No es
+//     prueba de que contestara, pero la marca existe para convocar a un
+//     humano, y eso ya paso.
+async function limpiarRevisionesAtendidas(): Promise<number> {
+  const { data: marcados } = await supabase
+    .from("messages")
+    .select("id, lead_id, created_at")
+    .eq("direction", "inbound")
+    .eq("requires_human_review", true)
+    .order("created_at", { ascending: false })
+    .limit(300);
+  const filas = (marcados ?? []) as Array<{ id: string; lead_id: string; created_at: string }>;
+  if (filas.length === 0) return 0;
+
+  const leadIds = Array.from(new Set(filas.map((f) => f.lead_id)));
+
+  // Respuestas del agente: drafts enviados, con el lead de su mensaje. El hint
+  // de la FK es obligatorio — hay dos entre drafts y messages (trampa 19).
+  const { data: enviados } = await supabase
+    .from("drafts")
+    .select("created_at, messages!drafts_message_id_fkey(lead_id)")
+    .eq("status", "auto_sent");
+  const ultimaRespuesta = new Map<string, number>();
+  // El embed llega como objeto (la FK draft->message es a-UNO) pero el cliente
+  // lo tipa como array, asi que se aceptan las dos formas en vez de castear a
+  // ciegas: si el runtime cambiara, esto no se rompe en silencio.
+  // deno-lint-ignore no-explicit-any
+  for (const d of (enviados ?? []) as any[]) {
+    const emb = d?.messages;
+    const lid: string | undefined = Array.isArray(emb) ? emb[0]?.lead_id : emb?.lead_id;
+    if (!lid) continue;
+    const t = +new Date(d.created_at);
+    if (t > (ultimaRespuesta.get(lid) ?? 0)) ultimaRespuesta.set(lid, t);
+  }
+
+  // Toques humanos en Kommo.
+  const { data: eventos } = await supabase
+    .from("lead_stage_events")
+    .select("lead_id, created_at")
+    .eq("moved_by", "kommo")
+    .in("lead_id", leadIds);
+  const ultimoToqueHumano = new Map<string, number>();
+  for (const e of (eventos ?? []) as Array<{ lead_id: string; created_at: string }>) {
+    const t = +new Date(e.created_at);
+    if (t > (ultimoToqueHumano.get(e.lead_id) ?? 0)) ultimoToqueHumano.set(e.lead_id, t);
+  }
+
+  const atendidos = filas.filter((f) => {
+    const t = +new Date(f.created_at);
+    return (ultimaRespuesta.get(f.lead_id) ?? 0) > t || (ultimoToqueHumano.get(f.lead_id) ?? 0) > t;
+  });
+  if (atendidos.length === 0) return 0;
+
+  const ids = atendidos.map((a) => a.id);
+  const { error: errMsg } = await supabase
+    .from("messages")
+    .update({ requires_human_review: false })
+    .in("id", ids);
+  if (errMsg) {
+    console.error("limpiarRevisionesAtendidas (messages):", errMsg.message);
+    return 0;
+  }
+
+  // Y se cierran sus alertas: la alerta guarda ref_table='messages' + ref_id.
+  const { error: errAl } = await supabase
+    .from("alerts")
+    .update({ acknowledged_at: new Date().toISOString() })
+    .eq("kind", "human_review_needed")
+    .eq("ref_table", "messages")
+    .in("ref_id", ids)
+    .is("acknowledged_at", null);
+  if (errAl) console.warn("limpiarRevisionesAtendidas (alerts):", errAl.message);
+
+  return atendidos.length;
+}
+
 async function detectHumanReviewNeeded(): Promise<AlertInput[]> {
   const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
   const { data } = await supabase
@@ -634,6 +722,11 @@ Deno.serve(async (req: Request) => {
 
   try {
     const runtimeCfg = await loadConfig(supabase);
+    // La limpieza va ANTES y en serie: si corriera en paralelo con
+    // detectHumanReviewNeeded, esta ultima podria volver a crear la alerta del
+    // mismo mensaje que la limpieza acaba de cerrar.
+    const revisionesLimpiadas = await limpiarRevisionesAtendidas();
+
     const [
       failed, review, regression, silence, webhookHealth, capsExceeded,
       providerCreditResolved, silenceResolved,
@@ -670,6 +763,7 @@ Deno.serve(async (req: Request) => {
           usage_cap_exceeded: capsExceeded.length,
           provider_credit_resolved: providerCreditResolved,
           inbound_silence_resolved: silenceResolved,
+          revisiones_limpiadas: revisionesLimpiadas,
         },
       }),
       { status: 200, headers: { "content-type": "application/json" } }

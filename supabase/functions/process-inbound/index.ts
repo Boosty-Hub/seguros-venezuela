@@ -26,6 +26,29 @@ const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, {
 
 const MAX_BATCH = 20;
 
+/**
+ * Meta manda este texto literal cuando un mensaje no se puede renderizar por
+ * la API: stickers, notas de voz, posts compartidos, respuestas a historias.
+ * NO es un mensaje del cliente, es relleno de la plataforma.
+ *
+ * Por que importa: llegaba al clasificador, que al no tener contenido adivinaba
+ * por el historial y lo repartia entre 4 verticales distintas con urgencia
+ * hasta 5, marcando revision humana. 15 de las 51 marcas de revision (29%)
+ * eran esta unica cadena. Ahora se reconoce antes de clasificar: no gasta
+ * Haiku, no va a revision, y el agente pide que lo reenvien — porque el
+ * cliente SI mando algo y dejarlo en silencio es dejarlo hablando solo.
+ */
+const PLACEHOLDER_PLATAFORMA = [
+  /message could not be displayed/i,
+  /due to api restrictions/i,
+];
+
+function esPlaceholderDePlataforma(texto: string | null | undefined): boolean {
+  const t = String(texto ?? "").trim();
+  if (!t) return false;
+  return PLACEHOLDER_PLATAFORMA.some((re) => re.test(t));
+}
+
 // ---- Tipos del payload de Kommo ----
 type KommoLead = {
   id: string | number;
@@ -514,7 +537,9 @@ ${verticalList}
 Reglas:
 - Puede que recibas el HISTORIAL de la conversación previa con este lead. Úsalo SOLO para entender a qué se refiere el mensaje nuevo (ej: "sí, dale", "y cuánto?", "el segundo") y desambiguar intent/vertical. Clasifica ÚNICAMENTE el mensaje nuevo, no el historial.
 - Si el mensaje es ambiguo o no encaja claramente en ninguna vertical específica, usa "general". El agente le hará una pregunta clarificadora. NO marques requires_human_review por ser ambiguo.
-- Solo marca requires_human_review=true cuando: (a) sea hate/sarcasmo/troll/insulto, (b) sea una queja seria que requiera intervención humana, o (c) tu confidence sea < 0.4.
+- Solo marca requires_human_review=true cuando: (a) sea hate/sarcasmo/troll/insulto, (b) sea una queja seria QUE APORTE INFORMACIÓN NUEVA y requiera intervención humana, o (c) tu confidence sea < 0.4.
+- NO marques requires_human_review si el mensaje nuevo no aporta información nueva, aunque la conversación entera sea un reclamo grave: un acuse o cierre ("ok", "gracias", "listo", "perfecto", un emoji suelto), un recordatorio sin datos nuevos ("espero respuesta", "alguna novedad?") o SOLO los datos que el agente acababa de pedir (nombre, cédula, teléfono, correo, número de póliza) NO necesitan un humano — el humano ya fue convocado por el mensaje que sí traía el reclamo.
+- La urgency y la toxicity son del MENSAJE NUEVO, no del historial. Un "ok." dentro de un reclamo furioso es urgency 1, no 4: heredar la urgencia del hilo inflaba la cola de revisión con acuses.
 - media_summary: si hay un adjunto (imagen/documento), describe en 1-3 frases QUÉ muestra y transcribe el texto/datos visibles relevantes (precios, números, nombres). Si no hay adjunto, devuelve "".
 - Usa la descripción de cada vertical (arriba) para decidir el slug correcto. No inventes verticales que no estén en la lista.
 - intent: info (consulta abierta), purchase (intención de compra clara), support (problema con algo ya comprado), feedback, spam, other.
@@ -1076,6 +1101,33 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
           .from("messages")
           .update({ ignored: true, ignored_reason: mediaIgnoreReason ?? "media_off" })
           .eq("id", msg.id);
+        continue;
+      }
+
+      // Relleno de la plataforma: no se clasifica (no hay nada que clasificar)
+      // y NO va a revisión, pero sí se encola para que el agente pida que lo
+      // reenvíen. Se le asigna la vertical "general" para que no quede como
+      // "sin clasificar" en /verticales ni en la cola de recuperación.
+      if (esPlaceholderDePlataforma(text)) {
+        const vGeneral = verticalsBySlug.get("general");
+        await supabase
+          .from("messages")
+          .update({
+            vertical_id: vGeneral?.id ?? null,
+            requires_human_review: false,
+            classification: {
+              placeholder_plataforma: true,
+              vertical_slug: "general",
+              intent: "other",
+              urgency: 1,
+              toxicity: 0,
+              confidence: 1,
+              requires_human_review: false,
+              nota: "Relleno de Meta: el mensaje del cliente no se pudo renderizar por la API. No se clasifica; el agente pide que lo reenvíe.",
+            },
+          })
+          .eq("id", msg.id);
+        if (vGeneral?.id) inboundMessageIds.push(msg.id);
         continue;
       }
 
