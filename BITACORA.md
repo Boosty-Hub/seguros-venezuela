@@ -185,6 +185,37 @@ cuenta aparte porque no hay corredor al que atribuirlos — es la medida de lo
 sucio que está el dato en Zoho (PENDIENTE 6). Routing y reporte difieren ahí
 deliberadamente; no es una desincronización que haya que "arreglar".
 
+### Efectividad de corredores (cotizado vs. emitido)
+
+En `/pipeline` → "B2C / B2B por corredor". Cruza las cotizaciones de Zoho con
+las pólizas realmente emitidas, que vienen del **sistema central en un CSV
+mensual** que el operador sube desde el propio dashboard (botón "Cargar
+emisiones": dos pasos, primero un preview de lo que va a entrar y solo después
+se escribe). Migraciones 0071-0073; el parser vive en `web/src/lib/emisiones.ts`
+y la ruta en `/api/pipeline/emisiones`.
+
+- **El cruce de cliente es por cédula** (tomador **o** asegurado, que son
+  personas distintas en muchas pólizas). `zoho_cedula()` la saca del asunto en
+  el 99,8% de los tickets B2B. Con el archivo de agosto machean 225 de 539
+  pólizas.
+- **El cruce de corredor es por `corredor_alias`**, que liga el texto libre de
+  Zoho al `Cod_Intermediario` canónico del CSV. Esto es lo que arregla el
+  recuento de corredores: las 12 escrituras de "BARECA" (typo `CORETAJE`
+  incluido) colapsan en una. `zoho_mapear_corredores()` lo propone solo
+  (267 alias de 1.163 nombres con el archivo de agosto) y respeta lo marcado a
+  mano (`origen` = `manual` / `rechazado`).
+- **La emisión se acredita al intermediario del sistema central**, no al asesor
+  que escribió el ticket: cuando difieren suele ser persona vs. empresa
+  (CSV "MARSH VENEZUELA CA..." vs. Zoho "MANUEL LOBATON").
+- **Anuladas no cuentan como cierre** y se muestran aparte (agosto: 460
+  vigentes / 79 anuladas).
+- Se publican **dos porcentajes** (por cotizaciones y por clientes) y son un
+  **suelo declarado**, no la cifra final: ver trampa 26. Con solo agosto dan
+  4,8% y 4,2%. La medida que NO depende de la ventana — y por eso la fiable
+  hoy — es la inversa: de las pólizas emitidas, cuántas venían de una
+  cotización (35,6%).
+- Falta la UI para editar alias a mano (hoy solo por SQL) — PENDIENTE 8.
+
 ### Rendimiento medido (2026-08-29)
 
 15 conversaciones simultáneas end-to-end publicando en Kommo, con 4 usuarios
@@ -213,11 +244,20 @@ navegando el dashboard: **15/15 respondidas, 0 errores, $0,51**.
 4. Decidir qué hacer con los leads `revisar-asesor`.
 5. Definir topes reales en `/consumo` (hoy sin tope).
 6. Limpiar en Zoho los 120 tickets con `Asesor` vacío (desde el 06-09 ya migran
-   a B2C, pero siguen sin corredor atribuible) y los nombres de corredor
-   escritos de varias formas, que hoy cuentan como corredores distintos.
+   a B2C, pero siguen sin corredor atribuible). Los nombres de corredor
+   escritos de varias formas ya no distorsionan la efectividad —
+   `corredor_alias` los colapsa— pero la tabla "B2B por corredor" sigue
+   listándolos crudos.
 7. Que `zoho-sync` escriba `sync_state` en cada corrida: hoy solo lo hace el
    script Node y la tabla aparenta un sync caído con el pipeline sano
    (trampa 25).
+8. **UI para editar `corredor_alias` a mano.** El auto-mapeo dejó 21 alias
+   ambiguos (dos candidatos con el mismo parecido, no elige a ciegas) y 875 sin
+   candidato. La tabla ya soporta `origen` = `manual` / `rechazado` y el
+   auto-mapeo los respeta, pero hoy solo se tocan por SQL.
+9. Cargar los meses de emisión anteriores si el sistema central los puede
+   exportar: mientras solo haya un mes, los dos porcentajes de efectividad son
+   un suelo (trampa 26).
 
 **Vencimientos:** token de Kommo **2027-10-30** (ese día deja de crearse
 cualquier lead). Refresh token de Zoho sin caducidad conocida, pero revocable.
@@ -375,6 +415,32 @@ Edge Functions: `npx supabase functions deploy <slug> --project-ref
     `succeeded` solo dice que el `net.http_post` se encoló, no que la Edge
     Function corriera — eso se confirma con `net._http_response`.
 
+26. **Una ventana de "madurez" contra `now()` mide cualquier cosa menos lo que
+    se cree.** La efectividad de corredores descartaba las cotizaciones de
+    menos de 60 días para no castigar a las que aún no habían tenido tiempo de
+    emitirse. Correcto en teoría; en la práctica dio **0,2%**, que parecía
+    desempeño catastrófico y era un error de medición: con emisiones solo de
+    agosto, las cotizaciones que produjeron esas emisiones son de julio y
+    agosto — o sea de MENOS de 60 días — así que el filtro tiraba justo la
+    evidencia. De las 342 cotizaciones que cruzaban con una emisión de agosto,
+    solo 32 pasaban el corte. La madurez hay que anclarla a la **ventana de
+    datos observada**, no a hoy: con emisiones en [D, H] solo es juzgable la
+    cotización nacida entre `D - maduración` y `H`. Reanclada, la misma base da
+    4,8%. Y aun así es un suelo mientras la ventana de cotizaciones (3 meses)
+    sea más ancha que la de emisiones (1 mes) — por eso la respuesta trae
+    `parcial: true` y el front lo dice con palabras. Regla general: antes de
+    publicar un porcentaje, comprobar que el denominador PUEDA tener numerador.
+27. **El CSV de emisiones tiene grano de RECIBO, no de póliza**, y viene en
+    **ISO-8859-1**. Las 655 filas de agosto son 539 pólizas: una póliza puede
+    llevar varias cuotas del mismo asegurado (`Recibo` es único y es la PK;
+    `Certificado` vale 0 en todas y no sirve de clave). Contar filas en vez de
+    pólizas infla el resultado un 21%. Los campos de póliza son constantes
+    entre sus recibos y solo varían `prima_recibo`, `estatus_recibo` y
+    `fecha_emision_recibo`, así que `v_polizas` colapsa con `min()`. Leerlo
+    como UTF-8 destroza la cabecera (`Motivo_Anulación`) y el parser deja de
+    reconocer las columnas; las fechas son `d/m/yyyy` y se convierten a ISO en
+    el parser, nunca dejándoselas interpretar a Postgres.
+
 ---
 
 ## Cronología
@@ -392,6 +458,11 @@ Edge Functions: `npx supabase functions deploy <slug> --project-ref
   llevaba 3 días sin traer un ticket (trampa 1): corregido, 236 recuperados.
   Prueba de carga end-to-end (ver Rendimiento) que destapó y motivó la vista
   materializada.
+- **06-09**: módulo de **efectividad de corredores**: carga mensual del
+  Reporte de Emisión con preview, `corredor_alias` para colapsar el texto
+  libre de Zoho en el código canónico, y los dos porcentajes (por cotizaciones
+  y por clientes) declarados como suelo hasta tener más meses (trampas 26-27).
+  La primera versión publicaba 0,2% por medir la madurez contra `now()`.
 - **01-09 → 06-09**: auditoría de los tres crones del pipeline: sanos
   (288/288 corridas en 24h, 0 fallos), pero `sync_state` no lo reflejaba
   (trampa 25). Cerrado el hueco del `asesor` NULL (trampa 24): 18 tickets
