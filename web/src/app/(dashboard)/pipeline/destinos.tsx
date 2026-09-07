@@ -4,6 +4,7 @@ import { ListaCorredores } from "./corredores";
 import { PanelAnalitica } from "./analitica-panel";
 import { TablaEfectividad, type CorredorEfec } from "./efectividad";
 import { CargarEmisiones } from "./cargar-emisiones";
+import { RevisarAlias } from "./alias-corredores";
 
 // Vista "Destinos": a dónde va cada ticket de Zoho.
 //
@@ -134,8 +135,9 @@ export async function DestinosView({ since }: { since: string | null }) {
             <>
               {" "}
               Los <span className="font-medium text-amber-700">{ov.sin_atribucion_tickets} sin atribución</span> tienen
-              ese campo vacío en el propio Zoho, así que no hay forma de saber si vienen de un corredor o de un cliente
-              final — se completan al llenarlo allá.
+              ese campo vacío en el propio Zoho. Desde el 06-09 <strong>sí migran a Kommo, al embudo B2C</strong> (un
+              cliente sin corredor es un cliente final), pero se cuentan aparte acá porque no hay corredor al que
+              atribuirles la venta — eso solo se arregla llenando el campo en Zoho.
             </>
           )}
         </p>
@@ -147,13 +149,21 @@ export async function DestinosView({ since }: { since: string | null }) {
           <h2 className="text-sm font-semibold tracking-tight text-neutral-900">
             Efectividad: de lo cotizado, cuánto se emitió
           </h2>
-          <CargarEmisiones
-            periodoCargado={
-              efec?.periodo_emisiones?.desde
-                ? `${fmtDia(efec.periodo_emisiones.desde)} – ${fmtDia(efec.periodo_emisiones.hasta)}`
-                : null
-            }
-          />
+          <div className="flex flex-wrap items-center gap-2">
+            {efec?.totales && efec.totales.sin_mapear > 0 && (
+              <RevisarAlias
+                sinMapear={efec.totales.sin_mapear}
+                totalCorredores={efec.totales.corredores}
+              />
+            )}
+            <CargarEmisiones
+              periodoCargado={
+                efec?.periodo_emisiones?.desde
+                  ? `${fmtDia(efec.periodo_emisiones.desde)} – ${fmtDia(efec.periodo_emisiones.hasta)}`
+                  : null
+              }
+            />
+          </div>
         </div>
 
         {efecError && (
@@ -229,7 +239,8 @@ export async function DestinosView({ since }: { since: string | null }) {
               <p className="text-[11px] text-neutral-500">
                 {efec.totales.sin_mapear} de {efec.totales.corredores} nombres de Zoho todavía no están ligados a un
                 código del sistema central: son corredores que no aparecen en los meses de emisión cargados, así que no
-                se les puede acreditar ni negar ningún cierre. Se van ligando solos al cargar más meses.
+                se les puede acreditar ni negar ningún cierre. Se van ligando solos al cargar más meses, o a mano
+                desde <strong>Revisar corredores</strong>.
                 {efec.totales.cerradas_otro > 0 && (
                   <>
                     {" "}
