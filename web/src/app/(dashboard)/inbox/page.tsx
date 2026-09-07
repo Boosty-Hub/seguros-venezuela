@@ -90,6 +90,22 @@ export default async function InboxPage({
     .order("last_message_at", { ascending: false, nullsFirst: false })
     .limit(500);
 
+  // Mensajes del AGENTE por conversación.
+  //
+  // `messages` solo guarda entrantes (verificado: las 611 filas son
+  // direction='inbound'); lo que respondió el agente vive en `drafts`. Solo
+  // cuentan los `auto_sent`: un draft `failed` nunca llegó al cliente, así que
+  // no es un mensaje de la conversación.
+  //
+  // Se traen los message_id y se resuelven contra los mensajes que ya cargó la
+  // consulta de arriba, en vez de pedir un conteo por lead: son ~250 filas y
+  // así no hace falta una segunda pasada por lead ni una función nueva.
+  const { data: enviados } = await supabase
+    .from("drafts")
+    .select("message_id")
+    .eq("status", "auto_sent");
+  const agenteXMensaje = new Set<string>((enviados ?? []).map((d) => d.message_id as string));
+
   // Trabajamos lead-by-lead: para cada uno sacamos el último mensaje y flag de review
   type LeadRow = {
     id: string;
@@ -106,6 +122,11 @@ export default async function InboxPage({
     verticals: string[];
     maxUrgency: number;
     maxToxicity: number;
+    /** Entrantes del cliente. */
+    msgCliente: number;
+    /** Respuestas del agente que SÍ se enviaron. */
+    msgAgente: number;
+    /** Total de la conversación: cliente + agente. */
     msgCount: number;
     // false = la etapa actual del lead está pausada (ignored_stage_ids): el
     // agente no responde ahí, la lleva un humano (pestaña Agente/Resto).
@@ -114,6 +135,7 @@ export default async function InboxPage({
 
   const allLeadRows: LeadRow[] = (leads ?? []).map((l) => {
     const msgs = ((l as unknown as { messages?: Array<{
+      id: string;
       content: string;
       direction: string;
       requires_human_review: boolean;
@@ -158,7 +180,9 @@ export default async function InboxPage({
       verticals,
       maxUrgency,
       maxToxicity,
-      msgCount: msgs.length,
+      msgCliente: msgs.length,
+      msgAgente: msgs.reduce((n, m) => n + (agenteXMensaje.has(m.id) ? 1 : 0), 0),
+      msgCount: msgs.length + msgs.reduce((n, m) => n + (agenteXMensaje.has(m.id) ? 1 : 0), 0),
     };
   });
 
@@ -550,8 +574,18 @@ export default async function InboxPage({
                               }>
                                 {name}
                               </p>
-                              <span className="shrink-0 text-[10px] text-neutral-400">
-                                {l.last_message_at ? timeAgo(l.last_message_at) : "—"}
+                              <span className="flex shrink-0 items-baseline gap-1.5 text-[10px] text-neutral-400">
+                                {/* Total de la conversación (cliente + agente).
+                                    El desglose va en el title porque en 2
+                                    dígitos no cabe y lo que se busca de un
+                                    vistazo es "cuán larga es". */}
+                                <span
+                                  className="rounded bg-neutral-100 px-1 font-medium tabular-nums text-neutral-600"
+                                  title={`${l.msgCount} mensajes en total: ${l.msgCliente} del cliente y ${l.msgAgente} del agente`}
+                                >
+                                  {l.msgCount}
+                                </span>
+                                <span>{l.last_message_at ? timeAgo(l.last_message_at) : "—"}</span>
                               </span>
                             </div>
                             <div className="flex items-center gap-1.5">
