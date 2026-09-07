@@ -229,9 +229,8 @@ export async function DestinosView({ since }: { since: string | null }) {
                     <strong>{efec.totales.cotiz_en_curso}</strong> posteriores{" "}
                   </>
                 )}
-                todavía no han tenido tiempo. El desfase medido entre cotizar y emitir es de 12 días de mediana, pero
-                llega a 57 en el 10% de los casos. La cuarta tarjeta, en cambio, no depende de ninguna ventana: es el
-                dato firme.
+                todavía no han tenido tiempo. La cuarta tarjeta, en cambio, no depende de ninguna ventana: es el dato
+                firme. El desfase real entre cotizar y emitir está en <strong>Analítica → Efectividad</strong>.
               </p>
             )}
 

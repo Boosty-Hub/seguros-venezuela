@@ -26,68 +26,63 @@ Para apagarlo: `/agent` → "Agente activo" (para todo) o "Publicar en Kommo"
 
 ### Agente
 
-- **System prompt: NO editable desde el dashboard** (solo lectura en `/agent`).
-  Se cambia editando `runtime_config.SYSTEM_PROMPT` o `agent-prompt-core.mjs`
-  y sincronizando con Anthropic.
+- **System prompt: NO editable desde el dashboard** (solo lectura en
+  `/agent`). Se cambia en `runtime_config.SYSTEM_PROMPT` o
+  `agent-prompt-core.mjs`, y sincronizando con Anthropic.
 - **Prohibido TODO emoji** (ver trampa 15). Dos capas: regla en el prompt +
   `sanitizeEmojiForKommo` en `generate-response`.
 - **Instagram y WhatsApp SÍ son canales seguros** para compartir
   cédula/teléfono/póliza — regla explícita tras un caso real al revés.
 - **Tono concreto**: no cierra con preguntas redundantes; al escalar dice que
-  un asesor ya tiene el caso y ofrece allanar o cotizar en línea. Clientes
-  molestos van al correo de ATC.
+  un asesor ya tiene el caso y ofrece allanar o cotizar. Clientes molestos van
+  al correo de ATC.
 - **Acciones de CRM** (`mover_etapa`, `marcar_perdido`, `enviar_imagen`,
-  `actualizar_lead/contacto`) **se ejecutan contra Kommo real aunque "Publicar
-  en Kommo" esté apagado** — ese interruptor solo gobierna los MENSAJES.
-- **`marcar_perdido`**: manda a Perdido (143) a empleo, spam y leads errados,
-  con una de las 11 razones de Kommo (ver trampa 10).
+  `actualizar_lead/contacto`) **corren contra Kommo real aunque "Publicar en
+  Kommo" esté apagado**: ese interruptor solo gobierna los MENSAJES.
+- **`marcar_perdido`**: manda a Perdido (143) empleo, spam y leads errados, con
+  una de las 11 razones de Kommo (trampa 10).
 - **Auto-sanado de etapa**: si se pierde un webhook `leads.status`,
-  `process-inbound` consulta la etapa viva en Kommo antes de ignorar el lead.
-  Antes quedaba mudo para siempre.
-- **`publish-to-kommo` reintenta** (3 veces) y **fusiona** `agent_metadata` en
-  vez de sobrescribirlo; antes un error dejaba el draft `failed` para siempre y
-  se perdían `session_id`/`tool_calls`/`model`/`vertical`. Dos casos son
-  terminales de una: lead cerrado o borrado en Kommo (trampa 23).
+  `process-inbound` consulta la etapa viva en Kommo antes de ignorar el lead
+  (antes quedaba mudo para siempre).
+- **`publish-to-kommo` reintenta** (3 veces) y **fusiona** `agent_metadata`;
+  antes un error dejaba el draft `failed` para siempre y se perdían
+  `session_id`/`tool_calls`/`model`/`vertical`. Dos casos son terminales de
+  una: lead cerrado o borrado en Kommo (trampa 23).
 - **Verticales**: 14 activas, cada una inyecta su `system_prompt`.
   Intermediarios-apertura-de-código mueve el lead a "Apertura de códigos" del
   pipeline CONFIGURACIONES (notifica por etapa, no por mensaje).
 - **KB por vertical con validador obligatorio**: `prepare` extrae con visión
   (PDF como `document` base64, imagen como `image`), `verify` hace que un
   segundo modelo juzgue la extracción contra el original, e `ingest` solo
-  guarda si pasa. Si no pasa, **bloquea y avisa**.
-- **Dreams**: en español (forzado en system + reglas). Frecuencia configurable
-  desde `/dreams` con cron dinámico. `/dreams` lista los activos en **tabla**
-  ordenable por fecha/severidad/período/título, con buscador, selector
-  50/100/250 y paginación. El digest (`DREAMS_DIGEST`) es rolling: ver trampa 17.
+  guarda si pasa; si no, **bloquea y avisa**.
+- **Dreams**: en español (forzado en system + reglas), frecuencia configurable
+  desde `/dreams` con cron dinámico. Se listan en **tabla** ordenable por
+  fecha/severidad/período/título, con buscador y paginación. El digest
+  (`DREAMS_DIGEST`) es rolling: ver trampa 17.
 
 ### Dashboard
 
 - **Torre de control**: la campana abre un panel que **desplaza** el contenido
-  (no flota) con alertas, Dreams pendientes, estado del agente, consumo vs.
-  tope y revisiones. **`/alerts` standalone fue eliminado**: la Torre es la
-  única vista de alertas.
+  con alertas, Dreams, estado del agente, consumo y revisiones. `/alerts`
+  standalone fue eliminado: la Torre es la única vista de alertas.
 - **`/inbox`**: pestañas "Agente"/"Resto", badge "Transferido a humano", y una
   sola línea de tiempo con mensajes + cambios de etapa (`lead_stage_events`,
-  incluidos los hechos a mano en Kommo) + imágenes enviadas por el agente. Un
-  cambio de etapa sin mensaje no toca `last_message_at` (no reordena el inbox).
-  **Favoritas**: estrella por conversación (`leads.favorited_at`, migración
-  0068) y botón de filtro con contador. La marca es **del equipo, no por
-  usuario**, y el filtro cruza las dos pestañas: si marcas una que después pasa
-  a un humano, sigue apareciendo.
+  incluidos los hechos a mano en Kommo) + imágenes del agente. Un cambio de
+  etapa sin mensaje no toca `last_message_at`. **Favoritas**: estrella por
+  conversación (`leads.favorited_at`, 0068) con filtro y contador; la marca es
+  **del equipo, no por usuario**, y cruza las dos pestañas.
 - **`/analitica`**: funnel del agente vía `analytics_overview(p_since)`. El
-  canal sale de `leads.channel` y si está vacío del `source` del primer
-  mensaje; los leads sin conversación **se excluyen** en vez de caer en un
-  "Otro" que llegó a ser el 79%. Lo no clasificado se reporta aparte
+  canal sale de `leads.channel`, o del `source` del primer mensaje si está
+  vacío; los leads sin conversación **se excluyen** en vez de caer en un "Otro"
+  que llegó a ser el 79%. Lo no clasificado se reporta aparte
   (`mensajes_sin_clasificar`, `fallos_clasificador`, `mensajes_ignorados`,
-  `mensajes_sin_contenido`) en vez de esconderse como "(sin clasificar)".
+  `mensajes_sin_contenido`).
 - **`/pipeline`, dos pestañas**: "B2C / B2B por corredor" (por defecto) y
   "Embudo Zoho" (`?vista=embudo`). La primera separa lo que va al agente de lo
   que va a corredores; lo B2B se lee por intermediario (tabla ordenable y
-  paginada, y al desplegar un corredor sus clientes con sus cotizaciones), más
-  la sección de efectividad de abajo. El botón **Analítica** abre un panel
-  lateral con plan, edad, cruce plan×edad, evolución mensual, estado,
-  concentración, repetición y prima. `moneda` y `ramo` están vacías al 100% en
-  Zoho: no se grafican a propósito.
+  paginada, con sus clientes al desplegar) más la efectividad. El botón
+  **Analítica** abre el cajón de abajo. `moneda` y `ramo` están vacías al 100%
+  en Zoho: no se grafican a propósito.
 - Fuente: `zoho_pipeline_overview()`, `zoho_corredor_detalle()` y
   `zoho_pipeline_analitica()` (0064-0066), que leen la materializada
   **`mv_zoho_clasificacion`** (0067), refrescada por cron un minuto después del
@@ -149,67 +144,72 @@ pg_cron   1. Zoho Desk  ──▶ Supabase (tickets)
           3. Hoja Drive ──▶ Supabase (meta_leads) ──▶ Kommo [MetaAds]
 ```
 
-**Zoho es incremental** (watermark `max(created_time)`, ver trampa 1). **Drive
-se relee completo** cada vez.
+**Zoho es incremental** (watermark `max(created_time)`, trampa 1); **Drive se
+relee completo**. **Anti-duplicados:** `kommo_lead_id is not null` = ya
+enviado, más `tickets_ya_en_kommo()`, dedupe dentro del lote y
+`meta_leads_solapados()`; la clave es `asunto + contacto + titular`
+(`ticket_dedup_key()`).
 
-**Anti-duplicados:** `kommo_lead_id is not null` = ya enviado; más
-`tickets_ya_en_kommo()`, dedupe dentro del lote y `meta_leads_solapados()`.
-Clave: `asunto + contacto + titular` (`ticket_dedup_key()`).
+**Filtro B2C:** van a `VENTAS B2C` los tickets con `Asesor` **NULL/vacío**
+(cliente sin corredor) o "No tengo" / "Sin Asesor" / "Sin Asesor (KG)" /
+"Seguros Venezuela" / "Directo Caracas" / "No Posee" (`ilike`). **B2B:** el
+resto, a "DATA ZOHO DESK". Tienen que ser **partición exacta**: un hueco deja
+tickets sin empujar para siempre (trampa 24) y un solapamiento duplica el lead.
+Viven en **dos runtimes que se tocan juntos**:
+`supabase/functions/zoho-kommo-push/index.ts` y `sync/lib/supa.mjs`.
 
-**Filtro B2C:** migran a `VENTAS B2C` los tickets con `Asesor` **NULL/vacío**
-(cliente final que llegó sin corredor) o = "No tengo" / "Sin Asesor" / "Sin
-Asesor (KG)" / "Seguros Venezuela" / "Directo Caracas" / "No Posee" (`ilike`).
-**B2B (inverso):** el resto (corredores con nombre real) va a `VENTAS B2B` →
-"DATA ZOHO DESK". Los dos filtros tienen que ser **partición exacta**: un hueco
-deja tickets sin empujar para siempre (trampa 24), un solapamiento duplica el
-lead. Viven en **dos runtimes que se tocan juntos**:
-`supabase/functions/zoho-kommo-push/index.ts` (el cron) y `sync/lib/supa.mjs`
-(el script Node).
-
-En SQL, `zoho_destino(asesor)` mantiene **a propósito** un tercer valor,
-`sin_atribucion`, para los NULL/vacío: en Kommo van a B2C, pero `/pipeline` los
-cuenta aparte porque no hay corredor al que atribuirlos — es la medida de lo
-sucio que está el dato en Zoho (PENDIENTE 6). Routing y reporte difieren ahí
-deliberadamente; no es una desincronización que haya que "arreglar".
+`zoho_destino(asesor)` conserva **a propósito** un tercer valor,
+`sin_atribucion`, para los NULL: en Kommo van a B2C, pero `/pipeline` los cuenta
+aparte porque no hay corredor al que atribuirlos (PENDIENTE 6). Routing y
+reporte difieren ahí deliberadamente.
 
 ### Efectividad de corredores (cotizado vs. emitido)
 
 En `/pipeline` → "B2C / B2B por corredor". Cruza las cotizaciones de Zoho con
-las pólizas realmente emitidas, que vienen del **sistema central en un CSV
-mensual** que el operador sube desde el propio dashboard (botón "Cargar
-emisiones": dos pasos, primero un preview de lo que va a entrar y solo después
-se escribe). Migraciones 0071-0073; el parser vive en `web/src/lib/emisiones.ts`
-y la ruta en `/api/pipeline/emisiones`.
+las pólizas emitidas, que llegan en un **CSV mensual del sistema central** que
+el operador sube desde el dashboard ("Cargar emisiones": preview primero,
+escritura solo al confirmar). Migraciones 0071-0076; parser en
+`web/src/lib/emisiones.ts`, rutas en `/api/pipeline/{emisiones,alias}`.
 
-- **El cruce de cliente es por cédula**, tomador **o** asegurado (son personas
-  distintas en muchas pólizas). `zoho_cedula()` la saca del asunto en el 99,8%
-  de los tickets B2B; con el archivo de agosto machean 225 de 539 pólizas.
-- **El cruce de corredor es por `corredor_alias`**, que liga el texto libre de
-  Zoho al `Cod_Intermediario` canónico del CSV. Esto es lo que arregla el
-  recuento de corredores: las 12 escrituras de "BARECA" (typo `CORETAJE`
-  incluido) colapsan en una. `zoho_mapear_corredores()` lo propone solo
-  (258 alias de 1.163 nombres con el archivo de agosto) y respeta lo marcado a
-  mano (`origen` = `manual` / `rechazado`). Para que dos nombres se consideren
-  candidatos tienen que compartir una palabra **poco común**: ver trampa 28.
-  Los ambiguos y los que no se parecen a nada se cierran a mano en el panel
-  **Revisar corredores** (`/api/pipeline/alias`, migraciones 0074-0076).
+- **Cliente por cédula**, tomador **o** asegurado (son personas distintas en
+  muchas pólizas). `zoho_cedula()` la saca del asunto en el 99,8% de los
+  tickets B2B; con agosto machean 225 de 539 pólizas.
+- **Corredor por `corredor_alias`**, que liga el texto libre de Zoho al
+  `Cod_Intermediario` canónico. Es lo que arregla el recuento: las 12
+  escrituras de "BARECA" (typo `CORETAJE` incluido) colapsan en una.
+  `zoho_mapear_corredores()` propone (258 de 1.163) exigiendo una palabra poco
+  común compartida (trampa 28) y respeta lo `manual`/`rechazado`. Lo ambiguo se
+  cierra a mano en **Revisar corredores**.
 - **La emisión se acredita al intermediario del sistema central**, no al asesor
-  que escribió el ticket: cuando difieren suele ser persona vs. empresa
-  (CSV "MARSH VENEZUELA CA..." vs. Zoho "MANUEL LOBATON").
-- **Anuladas no cuentan como cierre** y se muestran aparte (agosto: 460
-  vigentes / 79 anuladas).
-- Se publican **dos porcentajes** (por cotizaciones y por clientes) y son un
-  **suelo declarado**, no la cifra final: ver trampa 26. Con solo agosto dan
-  4,8% y 4,1%. La medida que NO depende de la ventana — y por eso la fiable
-  hoy — es la inversa: de las pólizas emitidas, cuántas venían de una
-  cotización (35,6%).
-- **Tests e2e con Playwright** (`web/e2e/`, 11 casos): cubren el render con
-  datos reales, que el aviso de parcialidad esté visible, el orden de la tabla,
-  el preview de la carga y el ligado/desligado de un alias. Se corren con
-  `npx playwright test` desde `web/`. El fixture de carga es **sintético a
-  propósito** (`e2e/fixtures/emision-sintetica.CSV`): este repo es público y el
-  archivo real lleva cédulas y teléfonos de personas reales. El caso del
-  archivo real se salta salvo que se defina `E2E_CSV_REAL`.
+  del ticket: cuando difieren suele ser persona vs. empresa ("MARSH VENEZUELA
+  CA..." vs. "MANUEL LOBATON"). **Anuladas no cuentan** como cierre (agosto:
+  460 vigentes / 79 anuladas).
+- Los **dos porcentajes** (por cotizaciones y por clientes) son un **suelo
+  declarado**: trampa 26. Con solo agosto dan 4,8% y 4,1%. La fiable hoy es la
+  inversa: de lo emitido, cuánto venía de una cotización (35,6%).
+- **15 tests e2e** (`web/e2e/`) cubren render, avisos, tabla, carga, alias y
+  pestañas. El fixture de carga es **sintético a propósito**: el repo es
+  público y el archivo real lleva cédulas y teléfonos reales.
+
+### Panel de analítica de `/pipeline`
+
+Cajón **flotante** que entra por la derecha ocupando la mitad de la pantalla,
+con el fondo oscurecido (antes desplazaba el contenido, y eso ataba su ancho al
+de la columna: ~600px, poco para el cruce plan×edad). Tres pestañas por
+**origen del dato**, que es lo que evita sumar cosas incomparables:
+
+- **Cotizaciones** — `zoho_pipeline_analitica()` (0066). Lo de siempre.
+- **Emisiones** — `zoho_emisiones_analitica()` (0077): cartera cobrado/por
+  cobrar/anulado con su comisión, suscripción por día, suma asegurada, plan de
+  pago, personas por póliza, anulaciones (tasa por plan y por corredor), canal
+  y los 12 corredores que más facturan con su comisión.
+- **Efectividad** — el cruce: cuánto de lo emitido pasó por Zoho y el desfase
+  cotizar→emitir (mediana 9 d, p75 25, p90 44, máx 138 sobre 192 pólizas).
+
+Las comisiones se muestran con desglose por corredor, por decisión del
+operador. Dos métricas que **no** están porque el CSV no las permite: fecha y
+motivo real de anulación (ver la cabecera de la 0077). Y ojo con `Prima_Anual`:
+no es anual — trampa 29.
 
 ### Rendimiento medido (2026-08-29)
 
@@ -235,27 +235,22 @@ seguidas (rate limiting propio).
    servicio y apuntar `META_SHEET_CSV_URL`.
 4. Decidir qué hacer con los leads `revisar-asesor`.
 5. Definir topes reales en `/consumo` (hoy sin tope).
-6. Limpiar en Zoho los 120 tickets con `Asesor` vacío (desde el 06-09 ya migran
-   a B2C, pero siguen sin corredor atribuible). Los nombres de corredor
-   escritos de varias formas ya no distorsionan la efectividad —
-   `corredor_alias` los colapsa— pero la tabla "B2B por corredor" sigue
-   listándolos crudos.
+6. Limpiar en Zoho: los 120 tickets con `Asesor` vacío (ya migran a B2C pero
+   siguen sin corredor atribuible), las 166 cotizaciones con `Asesor` = "si
+   tengo" y otros valores que no son un corredor (entran a B2B y ensucian el
+   conteo). La tabla "B2B por corredor" sigue listando los nombres crudos,
+   aunque la efectividad ya los colapsa con `corredor_alias`.
 7. Que `zoho-sync` escriba `sync_state` en cada corrida: hoy solo lo hace el
    script Node y la tabla aparenta un sync caído con el pipeline sano
    (trampa 25).
-8. Revisar a mano los **905 corredores sin ligar** en `/pipeline` → "Revisar
-   corredores" (9 ambiguos + 896 sin candidato). Casi todos son corredores que
-   no emitieron en los meses cargados y se ligarán solos al cargar más meses;
-   conviene empezar por los de más volumen, que es como los ordena el panel.
-9. Cargar los meses de emisión anteriores si el sistema central los puede
-   exportar: mientras solo haya un mes, los dos porcentajes de efectividad son
-   un suelo (trampa 26).
-10. **Borrar el usuario de prueba** `prueba.e2e@segurosvenezuela.com` (rol
-   editor) cuando no se necesite para los tests e2e. Sus credenciales están en
-   `web/.env.local` (`E2E_EMAIL` / `E2E_PASSWORD`), no versionado.
-11. En Zoho hay 166 cotizaciones con `Asesor` = "si tengo" y otras con valores
-   que no son un corredor: entran a B2B y ensucian el conteo. Se ven en el
-   panel de revisión, ordenadas por volumen.
+8. Revisar los **905 corredores sin ligar** en "Revisar corredores" (9 ambiguos
+   + 896 sin candidato). Casi todos no emitieron en los meses cargados y se
+   ligarán solos; empezar por los de más volumen, que es el orden del panel.
+9. **Pedir al sistema central los meses de emisión anteriores**, y si se puede
+   la fecha y el motivo real de anulación (hoy no vienen — trampa 29 y cabecera
+   de la 0077). Con un solo mes, los dos porcentajes son un suelo (trampa 26).
+10. **Borrar el usuario de prueba** `prueba.e2e@segurosvenezuela.com` (editor)
+   cuando no se necesite. Credenciales en `web/.env.local`, no versionado.
 
 **Vencimientos:** token de Kommo **2027-10-30** (ese día deja de crearse
 cualquier lead). Refresh token de Zoho sin caducidad conocida, pero revocable.
@@ -460,41 +455,45 @@ API, `verify_jwt=false`) o `npx supabase functions deploy <slug> --project-ref
     alias que había, 258 siguieron valiendo y los 9 restantes se borraron
     (solo `auto`, ninguna decisión humana): eran 3 cierres mal atribuidos.
 
+29. **`Prima_Anual` del Reporte de Emisión no es una prima anual.** Es lo
+    FACTURADO de esa póliza en el archivo: `prima_anual / suma(prima_recibo de
+    la póliza)` da **1,000 exacto** en todos los grupos, por plan de pago y por
+    número de recibos. Se detectó porque el panel mostraba "prima media" de
+    $135 en plan Mensual y $1.018 en Anual — un 7,5× que parecía un hallazgo
+    de negocio y era un artefacto: una póliza mensual suscrita en agosto lleva
+    facturado 1-2 meses y una anual el año entero. A igual suma asegurada
+    ($50.000) vale 130 en Mensual y 730 en Anual. Conclusión: el campo es
+    redundante con `sum(prima_recibo)` y **no se puede comparar entre planes de
+    pago**; todo el dinero del módulo sale de `prima_recibo`, que se llama como
+    lo que es. Regla general: antes de publicar una media, comprobar que el
+    denominador cubra la misma ventana en todos los grupos.
+
 ---
 
 ## Cronología
 
-- **07-08 → 19-08**: pipeline Zoho→Supabase→Kommo, dashboard, y agente "Sofi"
-  integrado (Managed Agent + Memory Stores) verificado en modo sombra.
-- **19-08 → 26-08**: **agente en vivo** end-to-end. Imágenes de trámites,
-  multimedia (foto/PDF/audio), 3 verticales nuevas, Torre de Control, módulos
-  `/analitica` e `/inbox` rehechos, pipeline pasado a `pg_cron`.
-- **26-08 → 29-08**: endurecimiento. `marcar_perdido`, tono concreto,
-  auto-sanado de etapa, reintentos de publicación, `matchStagesByName` tras
-  descubrir que un rename había tumbado el push B2C, validador de KB con
-  visión, `/analitica` corregida, 9.998 tickets enriquecidos y módulo
-  `/pipeline` B2C/B2B con panel de analítica. Se descubrió que `zoho-sync`
-  llevaba 3 días sin traer un ticket (trampa 1): corregido, 236 recuperados.
-  Prueba de carga end-to-end (ver Rendimiento) que destapó y motivó la vista
+- **07-08 → 19-08**: pipeline Zoho→Supabase→Kommo, dashboard y agente "Sofi"
+  (Managed Agent + Memory Stores) verificado en modo sombra.
+- **19-08 → 26-08**: **agente en vivo**. Multimedia, 3 verticales, Torre de
+  Control, `/analitica` e `/inbox` rehechos, pipeline pasado a `pg_cron`.
+- **26-08 → 29-08**: endurecimiento. `marcar_perdido`, auto-sanado de etapa,
+  reintentos de publicación, `matchStagesByName` (un rename había tumbado el
+  push B2C), validador de KB con visión, 9.998 tickets enriquecidos y módulo
+  `/pipeline` B2C/B2B. Se descubrió que `zoho-sync` llevaba 3 días sin traer un
+  ticket (trampa 1): 236 recuperados. La prueba de carga motivó la vista
   materializada.
-- **06-09 (tarde)**: panel **Revisar corredores** para ligar alias a mano,
-  ponderación por rareza de palabra en el emparejamiento (trampa 28, con
-  limpieza de 9 alias mal atribuidos) y suite de **11 tests e2e con
-  Playwright** contra el Supabase real con un usuario de prueba. De paso,
-  `zoho_alias_pendientes()` bajó de 1,77 s a 0,12 s guardando los tokens de
-  cada intermediario en columna en vez de recalcularlos con regex por fila.
-- **06-09**: módulo de **efectividad de corredores**: carga mensual del
-  Reporte de Emisión con preview, `corredor_alias` para colapsar el texto
-  libre de Zoho en el código canónico, y los dos porcentajes (por cotizaciones
-  y por clientes) declarados como suelo hasta tener más meses (trampas 26-27).
-  La primera versión publicaba 0,2% por medir la madurez contra `now()`.
-- **01-09 → 06-09**: auditoría de los tres crones del pipeline: sanos
-  (288/288 corridas en 24h, 0 fallos), pero `sync_state` no lo reflejaba
-  (trampa 25). Cerrado el hueco del `asesor` NULL (trampa 24): 18 tickets
-  atascados migrados a `VENTAS B2C`.
-- **29-08 → 01-09**: apagón del webhook de Kommo (trampa 20) y transcripción
-  de audio rota al 100% (trampas 21-22), ambos arreglados con auto-sanado y
-  recobro — 2 notas de voz reales atascadas se recuperaron. Auditoría de la
-  Torre de Control: 9 de 15 alertas explicadas y reconocidas, incluyendo
-  `publish-to-kommo` detectando leads cerrados/borrados (trampa 23); se
-  quitó el webhook de salida de alertas (nunca se usó).
+- **29-08 → 01-09**: apagón del webhook de Kommo (trampa 20) y transcripción de
+  audio rota al 100% (trampas 21-22), arreglados con auto-sanado y recobro.
+  Auditoría de la Torre: 9 de 15 alertas explicadas; se quitó el webhook de
+  salida de alertas.
+- **01-09 → 06-09**: los tres crones del pipeline auditados y sanos (288/288 en
+  24h), pero `sync_state` no lo reflejaba (trampa 25). Cerrado el hueco del
+  `asesor` NULL (trampa 24): 18 tickets migrados a `VENTAS B2C`.
+- **06-09**: módulo de **efectividad de corredores** (carga mensual con
+  preview, `corredor_alias`, dos porcentajes declarados como suelo — trampas
+  26-27; la primera versión daba 0,2% por medir la madurez contra `now()`),
+  panel **Revisar corredores** con ponderación por rareza (trampa 28, 9 alias
+  mal atribuidos limpiados), analítica de emisiones en **cajón flotante con
+  tres pestañas** (trampa 29: `Prima_Anual` no es anual) y **15 tests e2e** con
+  Playwright contra el Supabase real. De paso, `zoho_alias_pendientes()` de
+  1,77 s a 0,12 s y `zoho_corredores_efectividad()` de 2,5 s a 0,15 s.

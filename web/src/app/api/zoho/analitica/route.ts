@@ -14,10 +14,22 @@ export async function POST(request: Request) {
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   const body = (await request.json().catch(() => ({}))) as { since?: string | null };
+  const since = body.since ?? null;
 
-  const { data, error } = await supabase.rpc("zoho_pipeline_analitica", {
-    p_since: body.since ?? null,
+  // Las dos en paralelo y en una sola petición: el panel las necesita juntas
+  // (una pestaña cada una) y así hay un único estado de carga en vez de que
+  // cada pestaña parpadee la primera vez que se abre.
+  const [cotiz, emis] = await Promise.all([
+    supabase.rpc("zoho_pipeline_analitica", { p_since: since }),
+    supabase.rpc("zoho_emisiones_analitica", { p_since: since, p_maduracion_dias: 60 }),
+  ]);
+
+  if (cotiz.error) return NextResponse.json({ error: cotiz.error.message }, { status: 500 });
+  // La de emisiones NO tumba la respuesta: si falla (o aún no hay emisiones
+  // cargadas), la pestaña de cotizaciones tiene que seguir funcionando.
+  return NextResponse.json({
+    ok: true,
+    analitica: cotiz.data,
+    emisiones: emis.error ? { error: emis.error.message } : emis.data,
   });
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ ok: true, analitica: data });
 }

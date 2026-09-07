@@ -1,13 +1,24 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { ContenidoEmisiones, ContenidoEfectividad, type Emisiones } from "./analitica-emisiones";
+import {
+  Bloque, Cifra, C_B2C, C_B2B, C_SIN, n, pct, money, fmtDia,
+} from "./analitica-primitivas";
 
-// Panel lateral de analítica de /pipeline.
+// Panel de analítica de /pipeline: cajón FLOTANTE que entra por la derecha
+// ocupando la mitad de la PANTALLA, con el fondo oscurecido.
 //
-// DESPLAZA el contenido en vez de flotar encima (mismo criterio que la Torre
-// de Control): al abrirlo la página se encoge a la mitad y el panel ocupa la
-// otra mitad, así se puede mirar el gráfico y la tabla a la vez. En pantallas
-// angostas no hay mitad que valga: pasa a ocupar todo el ancho.
+// Antes desplazaba el contenido (la página se encogía a su mitad) y eso ataba
+// el ancho del panel al de la columna, que con el sidebar se quedaba en unos
+// 600px — poco para gráficos anchos y para el cruce plan×edad. Flotando gana
+// ancho real y además no descoloca la tabla de detrás al abrirlo y cerrarlo.
+// En móvil ocupa todo el ancho, que es la única "mitad" que cabe.
+//
+// Tres pestañas por ORIGEN del dato, que es lo que evita comparar peras con
+// manzanas: Cotizaciones (Zoho), Emisiones (sistema central) y Efectividad
+// (el cruce). Cada una tiene su propia ventana temporal y mezclarlas en un
+// mismo bloque daría números que no se pueden sumar entre sí.
 //
 // Los datos se piden al abrir, no en el render de la página.
 
@@ -31,17 +42,14 @@ type Analitica = {
   repeticion: { una: number; dos_a_cinco: number; seis_o_mas: number };
 };
 
-const C_B2C = "#6366f1";
-const C_B2B = "#0ea5e9";
+type Pestana = "cotizaciones" | "emisiones" | "efectividad";
 
-const nf = new Intl.NumberFormat("es-VE");
-const n = (v: number) => nf.format(v);
-const pct = (parte: number, total: number) => (total > 0 ? `${((parte / total) * 100).toFixed(1)}%` : "—");
-const money = (v: number | null) => (v == null ? "—" : `${nf.format(Math.round(v))}`);
 
 export function PanelAnalitica({ since, children }: { since: string | null; children: React.ReactNode }) {
   const [abierto, setAbierto] = useState(false);
   const [datos, setDatos] = useState<Analitica | null>(null);
+  const [emis, setEmis] = useState<Emisiones | null>(null);
+  const [pestana, setPestana] = useState<Pestana>("cotizaciones");
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -57,6 +65,7 @@ export function PanelAnalitica({ since, children }: { since: string | null; chil
       const json = await res.json().catch(() => ({ error: `respuesta inválida (${res.status})` }));
       if (!res.ok) throw new Error(json.error ?? "error");
       setDatos(json.analitica as Analitica);
+      setEmis((json.emisiones ?? null) as Emisiones | null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "no se pudo cargar la analítica");
     } finally {
@@ -68,6 +77,7 @@ export function PanelAnalitica({ since, children }: { since: string | null; chil
   // corresponde y hay que volver a pedirlo.
   useEffect(() => {
     setDatos(null);
+    setEmis(null);
   }, [since]);
 
   useEffect(() => {
@@ -78,7 +88,14 @@ export function PanelAnalitica({ since, children }: { since: string | null; chil
     if (!abierto) return;
     const esc = (e: KeyboardEvent) => e.key === "Escape" && setAbierto(false);
     window.addEventListener("keydown", esc);
-    return () => window.removeEventListener("keydown", esc);
+    // Con el cajón abierto, la rueda del ratón fuera de él movía la página de
+    // detrás y se perdía la referencia al cerrar.
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", esc);
+      document.body.style.overflow = overflow;
+    };
   }, [abierto]);
 
   return (
@@ -99,18 +116,38 @@ export function PanelAnalitica({ since, children }: { since: string | null; chil
         </button>
       </div>
 
-      {/* En móvil no hay "mitad" que valga: el panel se apila arriba del
-          contenido (queda justo debajo del botón, visible al abrirlo) y fluye
-          con la página. Recién en lg se pone al lado, fijo y con scroll
-          propio. */}
-      <div className="flex flex-col gap-5 lg:flex-row">
-        {abierto && (
-          <aside className="w-full lg:order-2 lg:w-1/2 lg:shrink-0 xl:w-[46%]">
-            <div className="space-y-5 rounded-xl border border-neutral-200 bg-white p-4 shadow-card lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto">
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold tracking-tight text-neutral-900">
-                  Analítica del pipeline
-                </h3>
+      {/* El contenido ya no se encoge: el cajón flota encima. */}
+      <div className="min-w-0">{children}</div>
+
+      {abierto && (
+        <>
+          {/* Fondo. Cierra al hacer clic, y deja ver la tabla de detrás para
+              no perder el contexto de lo que se estaba mirando. */}
+          <div
+            className="fixed inset-0 z-40 bg-neutral-900/40 backdrop-blur-[1px]"
+            onClick={() => setAbierto(false)}
+            aria-hidden="true"
+          />
+          <aside
+            role="dialog"
+            aria-modal="true"
+            aria-label="Analítica del pipeline"
+            className="fixed inset-y-0 right-0 z-50 flex w-full flex-col border-l border-neutral-200 bg-white shadow-2xl sm:w-[92vw] lg:w-1/2 lg:min-w-[620px]"
+          >
+            {/* Cabecera fija: las pestañas no se van con el scroll. */}
+            <div className="shrink-0 border-b border-neutral-100 px-5 pt-4">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h3 className="text-sm font-semibold tracking-tight text-neutral-900">
+                    Analítica del pipeline
+                  </h3>
+                  <p className="mt-0.5 text-[11px] text-neutral-400">
+                    {since
+                      ? `Cotizaciones desde ${new Date(since).toLocaleDateString("es-VE", { day: "2-digit", month: "short", year: "numeric" })}`
+                      : "Todo el histórico de cotizaciones"}
+                    {emis?.periodo?.desde && ` · emisiones de ${fmtDia(emis.periodo.desde)} a ${fmtDia(emis.periodo.hasta)}`}
+                  </p>
+                </div>
                 <button
                   type="button"
                   onClick={() => setAbierto(false)}
@@ -121,22 +158,48 @@ export function PanelAnalitica({ since, children }: { since: string | null; chil
                 </button>
               </div>
 
+              <div className="-mb-px mt-3 flex gap-1">
+                {(
+                  [
+                    ["cotizaciones", "Cotizaciones"],
+                    ["emisiones", "Emisiones"],
+                    ["efectividad", "Efectividad"],
+                  ] as const
+                ).map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setPestana(id)}
+                    className={
+                      "border-b-2 px-3 py-2 text-xs font-medium transition-colors " +
+                      (pestana === id
+                        ? "border-brand text-neutral-900"
+                        : "border-transparent text-neutral-500 hover:text-neutral-800")
+                    }
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Cuerpo con scroll propio. */}
+            <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-4">
               {cargando && <p className="py-6 text-center text-xs text-neutral-400">Calculando…</p>}
               {error && (
                 <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">⚠ {error}</p>
               )}
-              {datos && <Contenido a={datos} />}
+              {!cargando && !error && pestana === "cotizaciones" && datos && <Contenido a={datos} />}
+              {!cargando && !error && pestana === "emisiones" && <ContenidoEmisiones e={emis} />}
+              {!cargando && !error && pestana === "efectividad" && <ContenidoEfectividad e={emis} />}
             </div>
           </aside>
-        )}
-
-        <div className={"min-w-0 flex-1 lg:order-1 " + (abierto ? "[&_[data-stat-row]]:lg:grid-cols-2" : "")}>
-          {children}
-        </div>
-      </div>
+        </>
+      )}
     </div>
   );
 }
+
 
 function Contenido({ a }: { a: Analitica }) {
   const t = a.totales;
@@ -261,27 +324,7 @@ function Contenido({ a }: { a: Analitica }) {
 
 // ---------------------------------------------------------------- primitivas
 
-function Bloque({ titulo, nota, children }: { titulo: string; nota?: string; children: React.ReactNode }) {
-  return (
-    <section className="space-y-2">
-      <h4 className="text-xs font-semibold tracking-tight text-neutral-900">{titulo}</h4>
-      {nota && <p className="text-[11px] leading-relaxed text-neutral-500">{nota}</p>}
-      {children}
-    </section>
-  );
-}
 
-function Cifra({ label, valor, pie }: { label: string; valor: string; pie: string }) {
-  return (
-    <div className="flex-1 rounded-lg border border-neutral-200 bg-neutral-50/60 px-3 py-2">
-      <div className="text-[10px] uppercase tracking-wide text-neutral-500">{label}</div>
-      <div className="text-lg font-semibold tabular-nums text-neutral-900">{valor}</div>
-      {pie && <div className="text-[10px] text-neutral-400">{pie}</div>}
-    </div>
-  );
-}
-
-const C_SIN = "#cbd5e1";
 
 function Leyenda({ conSinAtribucion = false }: { conSinAtribucion?: boolean }) {
   return (
