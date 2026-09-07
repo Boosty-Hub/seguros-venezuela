@@ -20,3 +20,7 @@ supabase/.branches
 supabase/.temp
 supabase/.env
 *.tmp.json
+
+# deno.lock: lo genera "deno lint/check" al revisar las Edge Functions a mano.
+# No es parte del proyecto (Supabase las bundlea del lado servidor).
+deno.lock
