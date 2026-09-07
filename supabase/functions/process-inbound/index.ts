@@ -1192,6 +1192,40 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
 const RECOVER_BATCH = 10;
 const RECOVER_MAX_ATTEMPTS = 5;
 
+/**
+ * ¿El fallo es de la CUENTA o del MENSAJE?
+ *
+ * El tope de reintentos existe para que un mensaje imposible de clasificar no
+ * queme Haiku cada minuto para siempre. Pero contaba igual los fallos que no
+ * tienen NADA que ver con el mensaje: entre el 15 y el 19 de agosto la cuenta
+ * de Anthropic se quedó sin saldo, los 5 intentos se gastaron contra ese 400 y
+ * 102 mensajes (17% del total) quedaron condenados con prefijo "recover:", que
+ * los saca de la cola de reintentos PARA SIEMPRE. Con el saldo restituido se
+ * habrían clasificado sin problema, pero ya nadie los iba a volver a mirar.
+ *
+ * Un fallo de cuenta o de plataforma se reintentará indefinidamente, y eso es
+ * lo correcto: mientras dure, TODOS los mensajes fallan, así que el coste no
+ * se dispara (no hay llamadas que consumir) y en cuanto se resuelve el atasco
+ * se drena solo. Solo los fallos atribuibles al mensaje gastan intentos.
+ */
+function esFalloDeCuenta(err: unknown): boolean {
+  const m = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return (
+    m.includes("credit balance") ||      // sin saldo
+    m.includes("quota") ||
+    m.includes("billing") ||
+    m.includes("rate_limit") ||          // 429
+    m.includes("rate limit") ||
+    m.includes("overloaded") ||          // 529
+    m.includes("authentication") ||      // API key rota o rotada
+    m.includes("permission") ||
+    / 5\d\d(\D|$)/.test(m) ||               // 500/502/503/529 de la plataforma
+    m.includes("timeout") ||
+    m.includes("econnreset") ||
+    m.includes("fetch failed")
+  );
+}
+
 async function recoverFailedClassifications(anthropic: Anthropic, operator: string): Promise<number> {
   try {
     const { data: rows } = await supabase
@@ -1299,14 +1333,16 @@ async function recoverFailedClassifications(anthropic: Anthropic, operator: stri
         });
         healed++;
       } catch (e) {
-        // Falla al reintentar: contar el intento. Transitoria → vuelve al
-        // próximo ciclo del cron; al llegar a RECOVER_MAX_ATTEMPTS se marca
-        // con prefijo "recover:" (sale del select) + revisión humana, para
-        // que un error persistente no queme Haiku cada minuto para siempre.
+        // Falla al reintentar: contar el intento SOLO si el fallo es del
+        // mensaje. Un fallo de cuenta/plataforma (sin saldo, 429, 5xx) no
+        // gasta intentos: ver esFalloDeCuenta().
         const prevCls = (msg.classification ?? {}) as Record<string, unknown>;
-        const attempts = (Number(prevCls.recover_attempts) || 0) + 1;
+        const deCuenta = esFalloDeCuenta(e);
+        const attempts = deCuenta
+          ? Number(prevCls.recover_attempts) || 0
+          : (Number(prevCls.recover_attempts) || 0) + 1;
         const update =
-          attempts >= RECOVER_MAX_ATTEMPTS
+          !deCuenta && attempts >= RECOVER_MAX_ATTEMPTS
             ? {
                 requires_human_review: true,
                 classification: {
@@ -1318,9 +1354,14 @@ async function recoverFailedClassifications(anthropic: Anthropic, operator: stri
             : { classification: { ...prevCls, recover_attempts: attempts } };
         await supabase.from("messages").update(update).eq("id", msg.id).is("vertical_id", null);
         const errDetail = e instanceof Error ? e.message : String(e);
-        console.warn(`recover classify retry failed (intento ${attempts}/${RECOVER_MAX_ATTEMPTS}):`, errDetail);
+        console.warn(
+          deCuenta
+            ? `recover classify retry failed (fallo de CUENTA, no gasta intento; van ${attempts}/${RECOVER_MAX_ATTEMPTS}):`
+            : `recover classify retry failed (intento ${attempts}/${RECOVER_MAX_ATTEMPTS}):`,
+          errDetail
+        );
         if (isAudioRetry) {
-          await logEvent(supabase, "process-inbound", attempts >= RECOVER_MAX_ATTEMPTS ? "error" : "warn",
+          await logEvent(supabase, "process-inbound", !deCuenta && attempts >= RECOVER_MAX_ATTEMPTS ? "error" : "warn",
             `whisper transcribe falló (recover, intento ${attempts}/${RECOVER_MAX_ATTEMPTS})`,
             { detail: errDetail, msg_id: msg.id, media_url: msg.media_url });
         }

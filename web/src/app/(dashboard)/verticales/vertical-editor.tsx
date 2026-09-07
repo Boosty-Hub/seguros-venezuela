@@ -24,7 +24,32 @@ type KBDocument = {
   createdAt: string;
 };
 
-export function VerticalRow({ vertical, docs }: { vertical: Vertical; docs: KBDocument[] }) {
+/**
+ * Cuántos mensajes ha metido el clasificador en esta vertical.
+ * Sale de `verticales_uso()` (migración 0078) y llega `undefined` para una
+ * vertical que nunca clasificó nada — que NO es lo mismo que cero mensajes con
+ * el dato ausente, así que se pinta "—" y no "0".
+ */
+export type UsoVertical = {
+  mensajes: number;
+  recientes: number;
+  pct: number | null;
+  ultimo: string | null;
+};
+
+const nfUso = new Intl.NumberFormat("es-VE");
+
+export function VerticalRow({
+  vertical,
+  docs,
+  uso,
+  diasRecientes = 7,
+}: {
+  vertical: Vertical;
+  docs: KBDocument[];
+  uso?: UsoVertical;
+  diasRecientes?: number;
+}) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
 
@@ -118,6 +143,42 @@ export function VerticalRow({ vertical, docs }: { vertical: Vertical; docs: KBDo
           >
             {vertical.ignore ? "ON" : "OFF"}
           </button>
+        </td>
+        <td className="px-4 py-3">
+          {uso && uso.mensajes > 0 ? (
+            <div
+              className="flex items-baseline gap-1.5 tabular-nums"
+              title={`${nfUso.format(uso.mensajes)} mensajes clasificados en esta vertical · ${nfUso.format(
+                uso.recientes
+              )} en los últimos ${diasRecientes} días${
+                uso.ultimo
+                  ? ` · último el ${new Date(uso.ultimo).toLocaleDateString("es-VE", {
+                      day: "2-digit",
+                      month: "short",
+                    })}`
+                  : ""
+              }`}
+            >
+              <span className="text-sm font-medium text-neutral-900">{nfUso.format(uso.mensajes)}</span>
+              <span
+                className={
+                  "text-[11px] " + (uso.recientes > 0 ? "text-emerald-600" : "text-neutral-300")
+                }
+              >
+                {uso.recientes > 0 ? `+${nfUso.format(uso.recientes)}` : "0"}
+              </span>
+              <span className="text-[11px] text-neutral-400">
+                {uso.pct == null ? "" : `${uso.pct}%`}
+              </span>
+            </div>
+          ) : (
+            <span
+              className="text-[11px] text-neutral-300"
+              title="El clasificador no ha puesto ningún mensaje en esta vertical todavía"
+            >
+              —
+            </span>
+          )}
         </td>
         <td className="px-4 py-3">
           <span

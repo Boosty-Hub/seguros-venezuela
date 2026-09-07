@@ -45,6 +45,10 @@ import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 // always come from env — they are infrastructure constants, not per-client
 // configuration, and are required before we can even read runtime_config.
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+
+// Presupuesto para el reintento por respuesta vacía del agente: una corrida
+// son 60-80s, así que solo se reintenta si no se han gastado ya ~100s.
+const EMPTY_RETRY_BUDGET_MS = 100_000;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, {
@@ -1587,6 +1591,10 @@ Deno.serve(async (req: Request) => {
   // desconecta, dejando el draft 'pending' para siempre. Por eso devolvemos 200
   // de inmediato y corremos el trabajo lento bajo EdgeRuntime.waitUntil, que
   // mantiene la función viva hasta que termine aunque el cliente se vaya.
+  // Reloj del trabajo lento: el reintento por respuesta vacía solo se permite
+  // si queda presupuesto, porque una corrida del agente son 60-80s y dos
+  // seguidas pueden pasarse del límite del runtime.
+  const slowStart = Date.now();
   const slowWork = (async () => {
     try {
       const lead = await getLead(batch.leadId);
@@ -1648,7 +1656,7 @@ Deno.serve(async (req: Request) => {
         dreamsDigest: (resolvedCfg.get("DREAMS_DIGEST") ?? "").trim() || null,
       });
 
-      const outcome = await runAgent({
+      let outcome = await runAgent({
         leadId: batch.leadId,
         contextMessage,
         agentId,
@@ -1671,8 +1679,59 @@ Deno.serve(async (req: Request) => {
         draftId: draft.id,
       });
 
+      // El agente devuelve texto vacío de vez en cuando (3 veces en 3 semanas:
+      // 26-ago, 28-ago y 6-sep). Antes eso mataba el draft de una y la
+      // conversación se quedaba sin respuesta para siempre, con una alerta
+      // `draft_failed` que nadie podía accionar.
+      //
+      // Se reintenta UNA vez, y solo si queda presupuesto de tiempo. Si vuelve
+      // vacío, el draft se marca fallido igual pero además los mensajes del
+      // batch pasan a revisión humana: así el caso aparece en la cola de un
+      // asesor en vez de desaparecer.
       if (!outcome.responseText) {
-        throw new Error("agent devolvió respuesta vacía");
+        const gastado = Date.now() - slowStart;
+        if (gastado < EMPTY_RETRY_BUDGET_MS) {
+          console.warn(`agent devolvió respuesta vacía; reintento único (gastado ${gastado}ms)`);
+          outcome = await runAgent({
+            leadId: batch.leadId,
+            contextMessage,
+            agentId,
+            environmentId,
+            memstoreMaster,
+            memstoreLeads,
+            anthropic,
+            httpTools,
+            cfg: resolvedCfg,
+            kommoLeadId: lead.kommo_lead_id != null ? Number(lead.kommo_lead_id) : null,
+            kommoContactId: lead.kommo_contact_id != null ? Number(lead.kommo_contact_id) : null,
+            crm,
+            shopify,
+            bcvEnabled: cfg?.bcv_rate_enabled === true,
+            imageFieldId,
+            imageSalesbotId,
+            pauseStageIds,
+            verticalId: batch.verticalId,
+            currentKommoStageId: lead.kommo_stage_id != null ? Number(lead.kommo_stage_id) : null,
+            draftId: draft.id,
+          });
+        }
+        if (!outcome.responseText) {
+          // Fail-soft: si marcar la revisión falla, igual queremos el error
+          // original en el draft, así que no se propaga.
+          try {
+            await supabase
+              .from("messages")
+              .update({ requires_human_review: true })
+              .in("id", batchMsgs.map((m: MsgRow) => m.id));
+          } catch (revErr) {
+            console.warn("marcar revisión humana tras respuesta vacía:", revErr);
+          }
+          throw new Error(
+            gastado < EMPTY_RETRY_BUDGET_MS
+              ? "agent devolvió respuesta vacía dos veces; batch enviado a revisión humana"
+              : "agent devolvió respuesta vacía y no quedaba tiempo para reintentar; batch enviado a revisión humana"
+          );
+        }
       }
 
       // ---- Respuesta pública IA (comentario de Instagram) — fail-open ----

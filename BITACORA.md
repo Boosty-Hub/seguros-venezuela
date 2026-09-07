@@ -29,10 +29,9 @@ Para apagarlo: `/agent` → "Agente activo" (para todo) o "Publicar en Kommo"
 - **System prompt: NO editable desde el dashboard** (solo lectura en
   `/agent`). Se cambia en `runtime_config.SYSTEM_PROMPT` o
   `agent-prompt-core.mjs`, y sincronizando con Anthropic.
-- **Prohibido TODO emoji** (ver trampa 15). Dos capas: regla en el prompt +
-  `sanitizeEmojiForKommo` en `generate-response`.
-- **Instagram y WhatsApp SÍ son canales seguros** para compartir
-  cédula/teléfono/póliza — regla explícita tras un caso real al revés.
+- **Prohibido TODO emoji** (trampa 15): regla en el prompt +
+  `sanitizeEmojiForKommo`. **Instagram y WhatsApp SÍ son canales seguros** para
+  compartir cédula/teléfono/póliza (regla explícita tras un caso al revés).
 - **Tono concreto**: no cierra con preguntas redundantes; al escalar dice que
   un asesor ya tiene el caso y ofrece allanar o cotizar. Clientes molestos van
   al correo de ATC.
@@ -66,63 +65,70 @@ Para apagarlo: `/agent` → "Agente activo" (para todo) o "Publicar en Kommo"
   con alertas, Dreams, estado del agente, consumo y revisiones. `/alerts`
   standalone fue eliminado: la Torre es la única vista de alertas.
 - **`/inbox`**: pestañas "Agente"/"Resto", badge "Transferido a humano", y una
-  sola línea de tiempo con mensajes + cambios de etapa (`lead_stage_events`,
-  incluidos los hechos a mano en Kommo) + imágenes del agente. Un cambio de
-  etapa sin mensaje no toca `last_message_at`. **Favoritas**: estrella por
-  conversación (`leads.favorited_at`, 0068) con filtro y contador; la marca es
-  **del equipo, no por usuario**, y cruza las dos pestañas.
+  línea de tiempo con mensajes + cambios de etapa (`lead_stage_events`, los
+  hechos a mano en Kommo incluidos) + imágenes del agente. Un cambio de etapa
+  sin mensaje no toca `last_message_at`. **Favoritas** (`leads.favorited_at`,
+  0068) con filtro y contador: la marca es **del equipo, no por usuario**.
 - **`/analitica`**: funnel del agente vía `analytics_overview(p_since)`. El
-  canal sale de `leads.channel`, o del `source` del primer mensaje si está
-  vacío; los leads sin conversación **se excluyen** en vez de caer en un "Otro"
-  que llegó a ser el 79%. Lo no clasificado se reporta aparte
-  (`mensajes_sin_clasificar`, `fallos_clasificador`, `mensajes_ignorados`,
-  `mensajes_sin_contenido`).
+  canal sale de `leads.channel`, o del `source` del primer mensaje; los leads
+  sin conversación **se excluyen** en vez de caer en un "Otro" que llegó al
+  79%, y lo no clasificado se reporta aparte en vez de esconderse.
 - **`/pipeline`, dos pestañas**: "B2C / B2B por corredor" (por defecto) y
-  "Embudo Zoho" (`?vista=embudo`). La primera separa lo que va al agente de lo
-  que va a corredores; lo B2B se lee por intermediario (tabla ordenable y
-  paginada, con sus clientes al desplegar) más la efectividad. El botón
-  **Analítica** abre el cajón de abajo. `moneda` y `ramo` están vacías al 100%
-  en Zoho: no se grafican a propósito.
-- Fuente: `zoho_pipeline_overview()`, `zoho_corredor_detalle()` y
-  `zoho_pipeline_analitica()` (0064-0066), que leen la materializada
-  **`mv_zoho_clasificacion`** (0067), refrescada por cron un minuto después del
-  sync. Sin ella cada carga recalculaba los regex fila por fila y la página
-  tardaba el doble.
-- Datos al 06-09 (15.055 tickets no-spam): **B2C 2.649 · B2B 12.286 · sin
-  atribución 120** (99,2%), 1.163 corredores y ~11.000 clientes finales.
+  "Embudo Zoho" (`?vista=embudo`). Lo B2B se lee por intermediario (tabla
+  ordenable y paginada, con sus clientes al desplegar) más la efectividad; el
+  botón **Analítica** abre el cajón de abajo. `moneda` y `ramo` están vacías al
+  100% en Zoho: no se grafican a propósito. Fuente: `zoho_pipeline_overview()`,
+  `zoho_corredor_detalle()` y `zoho_pipeline_analitica()` (0064-0066) sobre la
+  materializada **`mv_zoho_clasificacion`** (0067), refrescada por cron un
+  minuto después del sync — sin ella cada carga recalculaba los regex fila por
+  fila. Datos al 06-09 (15.055 tickets no-spam): **B2C 2.649 · B2B 12.286 · sin
+  atribución 120**, 1.163 corredores y ~11.000 clientes finales.
+- **`/verticales`**: columna **Mensajes · 7d · %** con lo que el clasificador ha
+  metido en cada vertical (`verticales_uso()`, 0078; el dato es
+  `messages.vertical_id`). El pie **reconcilia**, que es lo que evita leer la
+  suma como si faltaran registros: 611 entrantes = clasificados + ignorados a
+  propósito (etapa del lead o media off, nunca llegan al clasificador) +
+  fallidos. Una vertical sin uso muestra "—", no "0": lo segundo se leería como
+  "se evaluó y nunca encajó".
 
 ### Alertas abiertas
 
-6 genuinas sin resolver, gap de **proceso** no de código: **Andrea** (queja de
-reembolso, tox 0.30, desde 26/08) y **Andrés Ramírez** (5 del 27/08:
-documentos/cédula, WhatsApp en formato no soportado, ambigüedad
-individual/colectiva). Requieren un humano en Kommo. Las otras 9 se auditaron
-el 01/09 y quedaron reconocidas con nota en `metadata.resolved_note` (trampas
-20-23). `detectOutcomesRegression` ignora una caída de `lead_replied` si el
-inbound también se desplomó (>50%): ese grader depende del volumen, no de la
-calidad, y confundía el apagón del webhook con una regresión.
+**18 abiertas al 06-09** (eran 23): **16 `human_review_needed`** del 26/08 al
+04/09 — gap de **proceso**, no de código: requieren un humano en Kommo (incluye
+Andrea, queja de reembolso desde el 26/08, y 5 de Andrés Ramírez del 27/08). Y
+**2 `dream_error`**: uno es el agente asumiendo datos no dichos por la clienta
+(corregido en el prompt, pendiente de sincronizar — PENDIENTE 12) y el otro son
+errores HMAC **en la app del cliente**, no en este sistema.
 
-**Sin webhook de salida de alertas** (`alert_config`, Slack/Discord): nunca se
-usó, la `0070` tiró la tabla. Las alertas viven solo en la Torre.
+Las otras 5 se cerraron el 06-09 con su causa arreglada: 2 `inbound_silence`
+rancias, 2 `outcomes_regression` que eran ruido (trampa 31) y 1 `draft_failed`
+por respuesta vacía (trampa 32). **Sin webhook de salida** (`alert_config`,
+Slack/Discord): nunca se usó, la `0070` tiró la tabla. Las alertas viven solo en
+la Torre, que filtra por `acknowledged_at is null`, **no** por `status`.
+
+**Se auto-resuelven** cuando su causa desaparece, en vez de quedarse en rojo:
+`provider_credit_exhausted` (llegó consumo nuevo) e `inbound_silence` (entró un
+evento a `inbound_queue` tras la alerta). `detectOutcomesRegression` exige 20
+muestras y significancia (trampa 31), y para `lead_replied` ignora la caída si
+el inbound se desplomó (>50%): ese grader depende del volumen, no de la
+calidad.
 
 ### Webhook de Kommo → auto-sanado
 
-Kommo deshabilita el webhook cuando le falla sostenido (pasó el 29/08: ~40h
-mudo, con la alerta `inbound_silence` avisando desde el 28/08 sin que nadie la
-atendiera). `alerts-scan` (cada 5 min) chequea el estado real contra la API y
-lo recrea solo si está `disabled` o no existe, sin esperar revisión humana —
-el cómo, en la trampa 20. Si falla reintenta cada 20 min indefinidamente
-(cooldown solo sobre la escritura; la lectura corre siempre). Avisa con
-`kommo_webhook_reconnected` / `kommo_webhook_reconnect_failed`.
+Kommo deshabilita el webhook cuando le falla sostenido (el 29/08: ~40h mudo,
+con `inbound_silence` avisando desde el 28/08 sin que nadie la atendiera).
+`alerts-scan` (cada 5 min) chequea el estado real contra la API y lo recrea
+solo si está `disabled` o no existe, sin esperar a un humano (el cómo, en la
+trampa 20). Si falla reintenta cada 20 min indefinidamente — cooldown solo
+sobre la escritura. Avisa con `kommo_webhook_reconnected` / `..._failed`.
 
 ### Bitácora propia (`system_logs`)
 
 El Log Drain oficial cuesta $60/mes — descartado. En su lugar, tabla propia
-`system_logs` (0069; retención `runtime_config.SYSTEM_LOGS_RETENTION_DAYS`,
-30 días por defecto, con cron de limpieza) + `_shared/system-log.ts`
-(`logEvent`, fail-soft), instrumentada a mano en `kommo-webhook` y
-`process-inbound`. No reemplaza al Log Drain (no cubre Postgres/Auth/HTTP
-general): es instrumentación puntual de los dos puntos que ya mordieron.
+`system_logs` (0069; retención en `runtime_config`, 30 días, con cron de
+limpieza) + `_shared/system-log.ts` (`logEvent`, fail-soft), instrumentada a
+mano en `kommo-webhook` y `process-inbound`. No cubre Postgres/Auth/HTTP: es
+instrumentación puntual de los dos puntos que ya mordieron.
 
 ### Transcripción de notas de voz (Whisper)
 
@@ -187,40 +193,35 @@ escritura solo al confirmar). Migraciones 0071-0076; parser en
 - Los **dos porcentajes** (por cotizaciones y por clientes) son un **suelo
   declarado**: trampa 26. Con solo agosto dan 4,8% y 4,1%. La fiable hoy es la
   inversa: de lo emitido, cuánto venía de una cotización (35,6%).
-- **15 tests e2e** (`web/e2e/`) cubren render, avisos, tabla, carga, alias y
-  pestañas. El fixture de carga es **sintético a propósito**: el repo es
-  público y el archivo real lleva cédulas y teléfonos reales.
+- **17 tests e2e** (`web/e2e/`) cubren render, avisos, tabla, carga, alias,
+  pestañas y la columna de verticales. El fixture de carga es **sintético a
+  propósito**: el repo es público y el real lleva cédulas y teléfonos reales.
 
 ### Panel de analítica de `/pipeline`
 
-Cajón **flotante** que entra por la derecha ocupando la mitad de la pantalla,
-con el fondo oscurecido (antes desplazaba el contenido, y eso ataba su ancho al
-de la columna: ~600px, poco para el cruce plan×edad). Tres pestañas por
-**origen del dato**, que es lo que evita sumar cosas incomparables:
+Cajón **flotante** por la derecha, mitad de pantalla, fondo oscurecido (antes
+desplazaba el contenido y eso ataba su ancho al de la columna: ~600px, poco
+para el cruce plan×edad). Tres pestañas por **origen del dato**, que es lo que
+evita sumar cosas incomparables: **Cotizaciones** (`zoho_pipeline_analitica()`,
+0066), **Emisiones** (`zoho_emisiones_analitica()`, 0077: cartera, suscripción
+por día, suma asegurada, plan de pago, beneficiarios, anulaciones por plan y
+por corredor, canal, y los 12 que más facturan con su comisión) y
+**Efectividad** (el cruce, más el desfase cotizar→emitir: mediana 9 d, p90 44,
+máx 138 sobre 192 pólizas).
 
-- **Cotizaciones** — `zoho_pipeline_analitica()` (0066). Lo de siempre.
-- **Emisiones** — `zoho_emisiones_analitica()` (0077): cartera cobrado/por
-  cobrar/anulado con su comisión, suscripción por día, suma asegurada, plan de
-  pago, personas por póliza, anulaciones (tasa por plan y por corredor), canal
-  y los 12 corredores que más facturan con su comisión.
-- **Efectividad** — el cruce: cuánto de lo emitido pasó por Zoho y el desfase
-  cotizar→emitir (mediana 9 d, p75 25, p90 44, máx 138 sobre 192 pólizas).
-
-Las comisiones se muestran con desglose por corredor, por decisión del
-operador. Dos métricas que **no** están porque el CSV no las permite: fecha y
-motivo real de anulación (ver la cabecera de la 0077). Y ojo con `Prima_Anual`:
-no es anual — trampa 29.
+Las comisiones van con desglose por corredor, por decisión del operador. No
+están la fecha ni el motivo real de anulación porque el CSV no los trae (ver
+cabecera de la 0077), y ojo con `Prima_Anual`, que no es anual: trampa 29.
 
 ### Rendimiento medido (2026-08-29)
 
-15 conversaciones simultáneas publicando en Kommo + 4 usuarios navegando:
-**15/15 respondidas, 0 errores, $0,51**. Publicado p50 139s / p95 186s, y el
-grueso NO es el modelo sino el cron de `process-inbound` (hasta 60s) más
-`response_debounce_seconds=45`; `generate_response` tardó 19,9s bajo carga, o
-sea que la concurrencia no lo degrada. Web: p50 122ms / p95 165ms en 4.902
-peticiones. Producción p50 ~500ms; `/pipeline` bajó de 1.500-1.800ms a
-765-810ms con la vista materializada. Netlify devuelve 403 tras ~66 cargas
-seguidas (rate limiting propio).
+15 conversaciones simultáneas + 4 usuarios navegando: **15/15 respondidas, 0
+errores, $0,51**. Publicado p50 139s / p95 186s, y el grueso NO es el modelo
+sino el cron de `process-inbound` (hasta 60s) más `response_debounce_seconds=45`
+(`generate_response` tardó 19,9s bajo carga: la concurrencia no lo degrada). Web
+p50 122ms / p95 165ms en 4.902 peticiones; producción p50 ~500ms y `/pipeline`
+bajó de 1.500-1.800ms a 765-810ms con la vista materializada. Netlify devuelve
+403 tras ~66 cargas seguidas (rate limiting propio).
 
 ## PENDIENTE
 
@@ -251,6 +252,14 @@ seguidas (rate limiting propio).
    de la 0077). Con un solo mes, los dos porcentajes son un suelo (trampa 26).
 10. **Borrar el usuario de prueba** `prueba.e2e@segurosvenezuela.com` (editor)
    cuando no se necesite. Credenciales en `web/.env.local`, no versionado.
+11. Atender en Kommo las **16 alertas `human_review_needed`** (26/08 - 04/09) y
+   las 3 conversaciones que el agente dejó sin respuesta por devolver vacío
+   (trampa 32), ya marcadas para revisión.
+12. **Sincronizar el prompt** desde `/agent` para activar la regla nueva de
+   `agent-prompt-core.mjs` ("no des por supuesto ningún dato que el lead no
+   haya dicho"). El CORE_SCAFFOLD vive en el Managed Agent y solo se actualiza
+   con `syncAgentTools()`, que empuja prompt **y** tools: por eso no se disparó
+   sin revisar antes que las tools de la DB coincidan con las del agente vivo.
 
 **Vencimientos:** token de Kommo **2027-10-30** (ese día deja de crearse
 cualquier lead). Refresh token de Zoho sin caducidad conocida, pero revocable.
@@ -268,31 +277,26 @@ select * from public.analytics_overview(now() - interval '30 days');
 select * from public.system_logs order by created_at desc limit 50;
 ```
 
-Otras vistas: `sync_log`, `kommo_sync_status`, `meta_sync_status`,
-`kommo_duplicados` (debe estar vacía; hoy tiene 64 grupos del 12-ago al 5-sep,
-pendientes de borrar a mano — trampa 2).
+Otras vistas: `sync_log`, `kommo_sync_status`, `meta_sync_status` y
+`kommo_duplicados` (debe estar vacía; hoy tiene 64 grupos por borrar, trampa 2).
 
 ```bash
 cd sync                                          # requiere sync/.env
 node --env-file=.env sync.mjs incremental        # el ciclo completo
 node --env-file=.env sync.mjs kommo --dry-run    # ver payloads, no escribe
-node --env-file=.env sync.mjs kommo-b2b --dry-run
-node --env-file=.env sync.mjs meta --dry-run
+#   ...igual con kommo-b2b y meta
 node --env-file=.env sync.mjs kommo-init 2026-08-01T00:00:00Z   # mover el corte
 node --env-file=.env limpiar-kommo.mjs --dry-run # etiquetar dups, arreglar tels
-cd ../web && npx playwright test                 # los 11 e2e de /pipeline
+cd ../web && npx playwright test                 # los 17 e2e
 ```
 
-Migraciones del pipeline en `db/`; las del agente y del módulo de emisiones en
+Migraciones del pipeline en `db/`; las del agente y emisiones en
 `supabase/migrations/`, aplicadas por Management API (`SUPABASE_ACCESS_TOKEN` /
-`SUPABASE_PROJECT_REF` en `.env.local`). Tras cambiar una migración o función,
-regenerar el bundle del wizard: `node web/scripts/embed-provision.mjs`.
-
-Edge Functions: `node scripts/deploy-agent-functions.mjs <slug>` (Management
-API, `verify_jwt=false`) o `npx supabase functions deploy <slug> --project-ref
-"$SUPABASE_PROJECT_REF" --no-verify-jwt`. Managed Agent: `node
---env-file=.env.local --env-file=sync/.env scripts/provision-agent.mjs`
-(idempotente; no reconfigura uno existente — eso se hace desde `/agent`).
+`SUPABASE_PROJECT_REF` en `.env.local`). Tras tocar una migración o función,
+regenerar el bundle: `node web/scripts/embed-provision.mjs`. Edge Functions:
+`node scripts/deploy-agent-functions.mjs <slug>`. Managed Agent:
+`scripts/provision-agent.mjs` (idempotente; NO reconfigura uno existente — eso
+se hace desde `/agent`, y es lo que empuja el prompt).
 
 ---
 
@@ -302,38 +306,32 @@ API, `verify_jwt=false`) o `npx supabase functions deploy <slug> --project-ref
 
 1. **Zoho no devuelve `modifiedTime` en el listado** de `/tickets`, solo en el
    detalle → el watermark es SIEMPRE `createdTime`. Costó un apagón de 3 días:
-   `zoho-sync` filtraba el listado por `modifiedTime`, que al ser `undefined`
-   daba 0, cortaba en el PRIMER ticket y sincronizaba cero, respondiendo
-   `ok:true, upserted:0` cada 5 minutos sin un error. Por eso la respuesta
-   ahora trae `watermark`/`nuevos_detectados`/`pendientes`: un cero silencioso
-   no se distingue de "no había nada" si no dices contra qué comparaste. Los
-   cambios de ESTADO (que el listado no permite filtrar) los cubre una segunda
-   pasada que refresca los abiertos más rancios.
-2. **La API de Kommo no borra leads** (`Allow: GET,POST,PATCH`). Limpiar =
-   etiquetar y borrar desde la interfaz.
-3. **`filter[tags][0][name]` no filtra fiable** — usar `filter[id][]=` o llevar
-   el inventario en Supabase.
-4. **Cédulas placeholder** (`V-00000000`, `12345678`, `124578963`) repetidas
-   entre personas distintas → **toda identidad de cliente lleva `titular`**,
-   nunca la cédula sola (`ticket_dedup_key()`, `zoho_cliente_key()`). Medido:
-   `12345678` sola fusionaba 153 personas en un "cliente" con 241 cotizaciones.
-5. **PostgREST corta en 1000 filas sin avisar**: ignora en silencio un `?limit=`
-   mayor. Un "enriquecer 12.000" procesó 998 y dijo "listo". Paginar con `Range`.
-6. **El endpoint de *tokens* de Zoho es mucho más estricto que la API de Desk**:
-   varios workers refrescando a la vez disparan "too many requests" y bloquean
-   todo un rato, sin error visible (falla al pedir el token, no el ticket).
-   `sync/lib/zoho.mjs` comparte un refresco en vuelo con espera creciente.
+   al filtrar por `modifiedTime` (que llegaba `undefined`) cortaba en el PRIMER
+   ticket y respondía `ok:true, upserted:0` cada 5 min sin un error. Por eso la
+   respuesta trae `watermark`/`nuevos_detectados`/`pendientes`: un cero
+   silencioso no se distingue de "no había nada" si no dices contra qué
+   comparaste. Los cambios de ESTADO los cubre una segunda pasada.
+2. **La API de Kommo no borra leads** (`Allow: GET,POST,PATCH`): etiquetar y
+   borrar desde la interfaz.
+3. **`filter[tags][0][name]` no filtra fiable** — usar `filter[id][]=`.
+4. **Cédulas placeholder** (`V-00000000`, `12345678`) repetidas entre personas
+   distintas → **toda identidad de cliente lleva `titular`**, nunca la cédula
+   sola. Medido: `12345678` fusionaba 153 personas en un "cliente".
+5. **PostgREST corta en 1000 filas sin avisar** e ignora un `?limit=` mayor: un
+   "enriquecer 12.000" procesó 998 y dijo "listo". Paginar con `Range`.
+6. **El endpoint de *tokens* de Zoho es más estricto que la API de Desk**:
+   varios workers refrescando a la vez disparan "too many requests" sin error
+   visible (falla al pedir el token, no el ticket). `sync/lib/zoho.mjs` comparte
+   un refresco en vuelo con espera creciente.
 7. **Teléfonos mezclados** → todo pasa por `lib/telefono.mjs`; lo que no encaja
-   en un patrón venezolano se deja crudo a propósito.
+   en patrón venezolano se deja crudo a propósito.
 8. **El `id` de Meta (`l:...`) es la mejor clave de idempotencia.**
-9. **Renombrar una etapa en Kommo rompe el código en silencio.** Pasó:
-    "cliente por atender" → "cliente por atender (atender)" y "AGENTE" →
-    "AGENTE (no atender)" tumbaron el push B2C y `mover_etapa` sin un error.
-    Nunca comparar nombres con `===`: usar `matchStagesByName()`
-    (`supabase/functions/_shared/kommo.ts`), que va literal → normalizado →
+9. **Renombrar una etapa en Kommo rompe el código en silencio.** "cliente por
+    atender" → "cliente por atender (atender)" tumbó el push B2C y
+    `mover_etapa` sin un error. Nunca comparar con `===`: usar
+    `matchStagesByName()` (`_shared/kommo.ts`), que va literal → normalizado →
     prefijo → contiene. El escalón literal importa: CONFIGURACIONES tiene dos
-    etapas que solo se distinguen por acentos ("Apertura de códigos" /
-    "APERTURA DE CODIGOS").
+    etapas que solo se distinguen por acentos.
 10. **Kommo exige `loss_reason_id` junto con `status_id`** en el mismo PATCH
     para marcar Perdido; solo da 400. Los estados 142 (Ganado) y 143 (Perdido)
     son globales, compartidos por todos los embudos.
@@ -341,119 +339,94 @@ API, `verify_jwt=false`) o `npx supabase functions deploy <slug> --project-ref
 **Agente / infraestructura**
 
 11. `process-inbound` **NO lee el body del POST**: procesa `inbound_queue`
-   (encolado por `kommo-webhook`). Para simular un mensaje hay que insertar en
-   `inbound_queue` y luego invocar `process-inbound`.
+   (encolado por `kommo-webhook`). Para simular un mensaje, insertar ahí.
 12. Migraciones con `net.http_post(url := '${SUPABASE_URL}/...')`: sustituir
     `${SUPABASE_URL}` por la URL real al aplicar a mano.
 13. `pg_cron` no tiene "cada N días desde una fecha ancla": se aproxima con
-    `*/N` en día-del-mes; `DREAMS_LAST_RUN` compensa el hueco real.
-14. El kill switch `agent_enabled` debe chequearse en **ambas**
-    `process-inbound` y `generate-response` — si solo está en una, la otra
-    sigue gastando con el agente "apagado".
+    `*/N` en día-del-mes y `DREAMS_LAST_RUN` compensa el hueco.
+14. El kill switch `agent_enabled` se chequea en **ambas** `process-inbound` y
+    `generate-response`: si solo está en una, la otra sigue gastando.
 15. **Cualquier emoji rompe un campo de texto de Kommo** (PATCH), no solo los
-    compuestos: un 👋 truncó el mensaje en vivo.
+    compuestos: un 👋 truncó un mensaje en vivo.
 16. **`EdgeRuntime.waitUntil()` para encadenar Edge Functions no es confiable**
-    (la función encadenada nunca se disparó en cron real). Preferir crons
+    (la encadenada nunca se disparó en cron real). Preferir crons
     independientes de `pg_cron`, cada uno con su red de seguridad.
-17. **`DREAMS_DIGEST` es rolling**: borrar los dreams fuente NO borra lo ya
-    consolidado. Una corrección dura requiere editar el digest directamente.
-18. **Una función `immutable` llamada desde otra función o desde una vista
-    necesita el esquema explícito** (`public.zoho_cedula(...)`): la definición
-    se resuelve con el `search_path` de quien la crea, que no siempre incluye
-    `public`. Falla con "function ... does not exist" aunque exista.
-19. **Bug de FK ambigua (`drafts`↔`messages`)**: `publish-to-kommo`,
-    `evaluate-outcomes` y `alerts-scan` tiraban 500 en cron por tener dos FKs
-    entre esas tablas. Se resuelve con el hint `messages!drafts_message_id_fkey`.
-20. **La API de Kommo no admite reactivar un webhook con PATCH** (`PATCH
-    /api/v4/webhooks/{id}` → 404 "Cannot PATCH"). Un webhook `disabled` (o
-    borrado) solo se repara con `DELETE` (por `destination`) + `POST` de
-    nuevo con el mismo destino y `settings`. Automatizado en `alerts-scan`
-    (ver "Webhook de Kommo → auto-sanado").
-21. **`fetch(url, {redirect:"error"})` no sirve para adjuntos de Kommo**: el
-    dominio de media (`amojo.kommo.com`) SIEMPRE redirige (2 saltos, hasta un
-    bucket de GCS firmado) — con `redirect:"error"` la promesa se rechaza
-    ante el primer 3xx. Para permitir el redirect sin abrir un hueco de SSRF,
-    hay que seguirlo a mano con `redirect:"manual"`, validando CADA destino
-    contra el mismo allowlist de hosts (ver `fetchAudioFollowingRedirects`).
+17. **`DREAMS_DIGEST` es rolling**: borrar los dreams fuente NO borra lo
+    consolidado; hay que editar el digest.
+18. **Una función `immutable` llamada desde otra función o vista necesita el
+    esquema explícito** (`public.zoho_cedula(...)`): se resuelve con el
+    `search_path` de quien la crea. Falla con "does not exist" aunque exista.
+19. **FK ambigua (`drafts`↔`messages`)**: tres funciones tiraban 500 en cron
+    por tener dos FKs entre esas tablas. Se resuelve con el hint
+    `messages!drafts_message_id_fkey`.
+20. **La API de Kommo no admite reactivar un webhook con PATCH** (→ 404
+    "Cannot PATCH"). Un webhook `disabled` o borrado solo se repara con
+    `DELETE` (por `destination`) + `POST` con el mismo destino y `settings`.
+    Automatizado en `alerts-scan`.
+21. **`fetch(url, {redirect:"error"})` no sirve para adjuntos de Kommo**:
+    `amojo.kommo.com` SIEMPRE redirige (2 saltos hasta un bucket de GCS
+    firmado). Para permitirlo sin abrir un hueco de SSRF hay que seguirlo a
+    mano con `redirect:"manual"`, validando CADA destino contra el allowlist
+    de hosts (`fetchAudioFollowingRedirects`).
 22. **Whisper valida el formato de audio por la extensión del nombre del
-    multipart, no por los bytes reales.** El `file_name` que reporta Kommo en
-    el payload (`file.ogg`) no coincide con el archivo real servido (viene
-    transcodeado, `content-type: audio/mp4`) → "Invalid file format" siempre.
-    Hay que derivar la extensión de `content-disposition`/`content-type` de
-    la respuesta real de descarga, nunca del nombre que reporta Kommo.
-23. **Kommo devuelve 400 "Not enough rights" al hacer PATCH de custom_fields
-    en un lead que YA está en Ganado (142) o Perdido (143)**, aunque el token
-    sea de admin — no es un problema de permisos del token, es el estado del
-    lead. `publish-to-kommo` lo detecta con `fetchLeadStage` antes de agotar
-    los 3 reintentos (nunca iba a funcionar, el lead no se reabre solo).
+    multipart, no por los bytes.** El `file_name` de Kommo (`file.ogg`) no
+    coincide con el archivo real (viene transcodeado, `audio/mp4`) → "Invalid
+    file format" siempre. La extensión se deriva del `content-disposition` /
+    `content-type` de la descarga real, nunca del nombre que reporta Kommo.
+23. **Kommo da 400 "Not enough rights" al hacer PATCH de custom_fields en un
+    lead que YA está en Ganado (142) o Perdido (143)**, aunque el token sea de
+    admin: no es permisos, es el estado del lead. `publish-to-kommo` lo detecta
+    con `fetchLeadStage` antes de agotar los 3 reintentos.
 
 24. **Un `ilike` contra NULL devuelve NULL, no `false`** — y entre dos filtros
-    "inversos" eso abre un HUECO, no un solapamiento. El filtro B2C
-    (`or=(asesor.ilike...)`) no matcheaba los `asesor` NULL y el B2B los
-    excluía con `not.is.null`: los tickets sin asesor no calificaban para
-    NINGÚN embudo y se quedaban sin lead para siempre (18 atascados, 4 ago →
-    4 sep de 2026). El comentario del código se cuidaba del solapamiento y no
-    del hueco. Arreglado con `asesor.is.null` en el filtro B2C. La misma
-    trampa muerde al verificarlo en SQL: `not (asesor ilike ...)` también
-    descarta las filas NULL, así que una consulta de control escrita así
-    "demuestra" que no hay nada. Al revisar filtros complementarios, comprobar
-    las DOS direcciones y que el total sea **exactamente** la suma de las
-    partes.
+    "inversos" eso abre un HUECO, no un solapamiento. El B2C no matcheaba los
+    `asesor` NULL y el B2B los excluía con `not.is.null`: los tickets sin asesor
+    no calificaban para NINGÚN embudo y se quedaban sin lead para siempre (18
+    atascados, 4 ago → 4 sep). La misma trampa muerde al verificarlo: `not
+    (asesor ilike ...)` también descarta las filas NULL, así que la consulta de
+    control "demuestra" que no hay nada. Comprobar las DOS direcciones, y que el
+    total sea **exactamente** la suma de las partes.
 25. **`sync_state` no refleja lo que hace el cron: solo lo escribe el script
-    Node.** La Edge Function `zoho-sync` (la que corre en `pg_cron`) nunca
-    toca la tabla, así que `last_incremental_sync` y `total_tickets` quedaron
-    congelados en la última corrida de `sync/sync.mjs` (26-08) y aparentan un
-    sync caído hace días con el pipeline perfectamente sano. Medir frescura
-    con `max(tickets.synced_at)`, no con `sync_state`. Lo mismo, más leve, con
-    `kommo_last_run`/`kommo_b2b_last_run`: `pushOne` sale temprano sin
-    actualizarlos cuando no hay nada pendiente, así que en horas tranquilas se
-    ven viejos aunque el job corra cada 5 min. Y ojo con `cron.job_run_details`:
-    `succeeded` solo dice que el `net.http_post` se encoló, no que la Edge
-    Function corriera — eso se confirma con `net._http_response`.
+    Node.** La Edge Function `zoho-sync` (la del `pg_cron`) nunca toca la tabla,
+    así que `last_incremental_sync` y `total_tickets` se congelaron en la última
+    corrida de `sync/sync.mjs` (26-08) y aparentan un sync caído con el pipeline
+    sano. Medir frescura con `max(tickets.synced_at)`. Igual con
+    `kommo_last_run`: `pushOne` sale temprano sin actualizarlo si no hay nada
+    pendiente. Y `cron.job_run_details.succeeded` solo dice que el `http_post`
+    se encoló, no que la función corriera: eso es `net._http_response`.
 
 26. **Una ventana de "madurez" contra `now()` mide cualquier cosa menos lo que
-    se cree.** La efectividad de corredores descartaba las cotizaciones de
-    menos de 60 días para no castigar a las que aún no habían tenido tiempo de
-    emitirse. Correcto en teoría; en la práctica dio **0,2%**, que parecía
-    desempeño catastrófico y era un error de medición: con emisiones solo de
-    agosto, las cotizaciones que produjeron esas emisiones son de julio y
-    agosto — o sea de MENOS de 60 días — así que el filtro tiraba justo la
-    evidencia. De las 342 cotizaciones que cruzaban con una emisión de agosto,
-    solo 32 pasaban el corte. La madurez hay que anclarla a la **ventana de
-    datos observada**, no a hoy: con emisiones en [D, H] solo es juzgable la
-    cotización nacida entre `D - maduración` y `H`. Reanclada, la misma base da
-    4,8%. Y aun así es un suelo mientras la ventana de cotizaciones (3 meses)
-    sea más ancha que la de emisiones (1 mes) — por eso la respuesta trae
-    `parcial: true` y el front lo dice con palabras. Regla general: antes de
+    se cree.** La efectividad descartaba las cotizaciones de menos de 60 días
+    para no castigar a las que aún no podían haberse emitido. En la práctica
+    dio **0,2%**: con emisiones solo de agosto, las cotizaciones que las
+    produjeron son de julio y agosto — MENOS de 60 días — así que el filtro
+    tiraba justo la evidencia (de 342 que cruzaban, solo 32 pasaban el corte).
+    La madurez se ancla a la **ventana de datos observada**: con emisiones en
+    [D, H] solo es juzgable lo nacido entre `D - maduración` y `H`. Reanclada da
+    4,8%, y sigue siendo un suelo mientras la ventana de cotizaciones sea más
+    ancha que la de emisiones (de ahí `parcial: true`). Regla general: antes de
     publicar un porcentaje, comprobar que el denominador PUEDA tener numerador.
 27. **El CSV de emisiones tiene grano de RECIBO, no de póliza**, y viene en
-    **ISO-8859-1**. Las 655 filas de agosto son 539 pólizas: una póliza puede
-    llevar varias cuotas del mismo asegurado (`Recibo` es único y es la PK;
-    `Certificado` vale 0 en todas y no sirve de clave). Contar filas en vez de
-    pólizas infla el resultado un 21%. Los campos de póliza son constantes
-    entre sus recibos y solo varían `prima_recibo`, `estatus_recibo` y
-    `fecha_emision_recibo`, así que `v_polizas` colapsa con `min()`. Leerlo
-    como UTF-8 destroza la cabecera (`Motivo_Anulación`) y el parser deja de
-    reconocer las columnas; las fechas son `d/m/yyyy` y se convierten a ISO en
-    el parser, nunca dejándoselas interpretar a Postgres.
+    **ISO-8859-1**. Las 655 filas de agosto son 539 pólizas (varias cuotas del
+    mismo asegurado; `Recibo` es la PK, `Certificado` vale 0 en todas): contar
+    filas infla el resultado un 21%. Los campos de póliza son constantes entre
+    sus recibos y solo varían `prima_recibo`, `estatus_recibo` y
+    `fecha_emision_recibo`, así que `v_polizas` colapsa con `min()`. Leerlo como
+    UTF-8 destroza la cabecera y el parser deja de reconocer las columnas; las
+    fechas `d/m/yyyy` se pasan a ISO en el parser, no en Postgres.
 
-28. **Emparejar nombres por palabras compartidas necesita ponderar por
-    rareza, o empareja gente distinta.** El mapeo de corredores puntuaba por
-    palabras en común (ignorando el vocabulario del ramo) y con eso "JOSE
-    SAYEGH" salía emparejado al 50% con "ALBERTO JOSE MEJIAS URRIBARRI": solo
-    compartían "JOSE", que aparece en 27 de los 174 intermediarios (15,5%).
-    Peor: el auto-mapeo había ligado "JOSE GARCIA" → "ATILIO JOSE ROSALES
-    GARCIA" con score 1,0, y "VICTOR MANUEL DELGADO" → "VICTOR MANUEL ARROYO
-    LOPEZ". Un alias equivocado es PEOR que ninguno, porque acredita a un
-    corredor las pólizas de otro y el número resultante parece bueno.
-    Arreglado exigiendo que compartan al menos una palabra presente en 3
+28. **Emparejar nombres por palabras compartidas necesita ponderar por rareza,
+    o empareja gente distinta.** "JOSE SAYEGH" salía al 50% con "ALBERTO JOSE
+    MEJIAS URRIBARRI" por compartir solo "JOSE", que está en 27 de los 174
+    intermediarios (15,5%); y el auto-mapeo había ligado "JOSE GARCIA" a
+    "ATILIO JOSE ROSALES GARCIA" con score 1,0. Un alias equivocado es PEOR que
+    ninguno: acredita a un corredor las pólizas de otro y el número parece
+    bueno. Arreglado exigiendo una palabra compartida presente en 3
     intermediarios o menos (`zoho_tokens_comunes()`), calculada sobre la tabla
-    y no con una lista fija de nombres, que se quedaría vieja al entrar
-    intermediarios nuevos. La pasada de trigram se conserva porque compara el
-    nombre ENTERO y rescata los casos legítimos donde todas las palabras son
-    comunes ("JOSE ALEJANDRO GIL GOMEZ" contra sí mismo). Al reevaluar los 267
-    alias que había, 258 siguieron valiendo y los 9 restantes se borraron
-    (solo `auto`, ninguna decisión humana): eran 3 cierres mal atribuidos.
+    y no con una lista fija que envejecería. El trigram se conserva: compara el
+    nombre ENTERO y rescata los casos donde todas las palabras son comunes. De
+    los 267 alias, 258 siguieron valiendo; los 9 restantes eran 3 cierres mal
+    atribuidos.
 
 29. **`Prima_Anual` del Reporte de Emisión no es una prima anual.** Es lo
     FACTURADO de esa póliza en el archivo: `prima_anual / suma(prima_recibo de
@@ -467,6 +440,34 @@ API, `verify_jwt=false`) o `npx supabase functions deploy <slug> --project-ref
     pago**; todo el dinero del módulo sale de `prima_recibo`, que se llama como
     lo que es. Regla general: antes de publicar una media, comprobar que el
     denominador cubra la misma ventana en todos los grupos.
+
+30. **Un tope de reintentos que no distingue de quién es la culpa condena
+    mensajes sanos.** `process-inbound` reintenta 5 veces y luego pone el
+    prefijo `recover:`, que saca el mensaje de la cola PARA SIEMPRE (el tope
+    existe por algo: sin él, un mensaje imposible quema Haiku cada minuto).
+    Pero contaba igual los fallos que NO son del mensaje: del 15 al 19 de agosto
+    la cuenta se quedó sin saldo, los 5 intentos se gastaron contra ese 400 y
+    **102 mensajes (17% del total) quedaron sin clasificar para siempre**.
+    Arreglado con `esFalloDeCuenta()`: sin saldo, 429, 5xx, timeouts y auth no
+    gastan intento — es seguro reintentar indefinidamente porque mientras dura
+    el corte fallan todos (no hay coste) y al resolverse la cola se drena sola.
+31. **Una alerta de "regresión" con 6 muestras es ruido, no una señal.** El
+    detector comparaba el promedio de 24h contra el de los 6 días previos con
+    un mínimo de solo 5 muestras, y disparó una alerta de "caída 69%" con n=6
+    contra un baseline de n=96 (o sea 6 casos contra 16 diarios). Un grader no
+    evalúa a diario: pocas muestras significa "ventana no representativa", no
+    "el agente empeoró". Ahora exige **20 muestras** y que la caída supere **2
+    errores estándar** de la diferencia (~95%). Con eso, 0,455 (n=22) contra
+    0,667 (n=60) tampoco alerta: la caída es 0,212 y el margen 0,245. Para
+    calcularlo hay que acumular la suma de cuadrados, no solo la suma.
+32. **El agente devuelve texto vacío de vez en cuando, y eso dejaba la
+    conversación muerta.** Pasó 3 veces (26/08 x2, 06/09) y en las TRES el lead
+    se quedó sin respuesta (`respuestas_posteriores = 0`): el draft se marcaba
+    `failed` de una, sin reintento, y la alerta no era accionable. Ahora se
+    reintenta UNA vez —solo si se han gastado menos de 100s, porque una corrida
+    son 60-80s y dos pueden pasarse del límite del runtime— y si vuelve vacío
+    los mensajes pasan a `requires_human_review`, que sí pone el caso en la
+    cola de un asesor.
 
 ---
 

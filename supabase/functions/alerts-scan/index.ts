@@ -137,8 +137,22 @@ async function detectHumanReviewNeeded(): Promise<AlertInput[]> {
     });
 }
 
+// Mínimo de muestras en la ventana de 24h para que una comparación signifique
+// algo. Antes eran 5, y con 5-6 evaluaciones cualquier variación normal parece
+// un desplome: en producción saltó una alerta de "caída 69%" con n=6 contra un
+// baseline de n=96, o sea 6 casos contra un promedio de 16 diarios. Un grader
+// no tiene por qué evaluar a diario, así que pocas muestras significa "ventana
+// no representativa", no "el agente empeoró".
+const REGRESION_MIN_MUESTRAS = 20;
+// Además de tener muestras, la caída tiene que superar el ruido: se exige que
+// la diferencia sea mayor que 2 errores estándar combinados (~95% de
+// confianza). Con esto, 0,455 (n=22) contra 0,667 (n=60) NO alerta, porque la
+// diferencia (0,21) queda por debajo de los 0,24 de margen — es exactamente el
+// caso que se estaba reportando como regresión real.
+const REGRESION_SIGMAS = 2;
+
 async function detectOutcomesRegression(): Promise<AlertInput[]> {
-  // Comparar últimas 24h vs 7 días previos por grader (solo si hay ≥5 muestras en cada ventana)
+  // Comparar últimas 24h vs 7 días previos por grader.
   const now = Date.now();
   const since24 = new Date(now - 24 * 3600 * 1000).toISOString();
   const since7d = new Date(now - 7 * 24 * 3600 * 1000).toISOString();
@@ -155,23 +169,34 @@ async function detectOutcomesRegression(): Promise<AlertInput[]> {
     .lt("created_at", since24)
     .not("score", "is", null);
 
-  type Agg = { sum: number; count: number; slug: string };
+  // sumSq permite calcular la varianza de la muestra, y con ella el error
+  // estándar de cada media: sin eso solo se puede comparar promedios a pelo y
+  // no hay forma de distinguir una caída real del ruido de una muestra chica.
+  type Agg = { sum: number; sumSq: number; count: number; slug: string };
   const recentAgg = new Map<string, Agg>();
   const baseAgg = new Map<string, Agg>();
   for (const r of recent ?? []) {
     // deno-lint-ignore no-explicit-any
     const slug = (r as any).graders?.slug ?? "?";
-    const cur = recentAgg.get(r.grader_id as string) ?? { sum: 0, count: 0, slug };
-    cur.sum += Number(r.score);
+    const cur = recentAgg.get(r.grader_id as string) ?? { sum: 0, sumSq: 0, count: 0, slug };
+    const v = Number(r.score);
+    cur.sum += v;
+    cur.sumSq += v * v;
     cur.count += 1;
     recentAgg.set(r.grader_id as string, cur);
   }
   for (const r of baseline ?? []) {
-    const cur = baseAgg.get(r.grader_id as string) ?? { sum: 0, count: 0, slug: "?" };
-    cur.sum += Number(r.score);
+    const cur = baseAgg.get(r.grader_id as string) ?? { sum: 0, sumSq: 0, count: 0, slug: "?" };
+    const v = Number(r.score);
+    cur.sum += v;
+    cur.sumSq += v * v;
     cur.count += 1;
     baseAgg.set(r.grader_id as string, cur);
   }
+
+  /** Varianza de muestra (n-1). Devuelve 0 con menos de 2 datos. */
+  const varianza = (a: Agg) =>
+    a.count < 2 ? 0 : Math.max(0, (a.sumSq - (a.sum * a.sum) / a.count) / (a.count - 1));
 
   // `lead_replied` mide "¿llegó un inbound del lead tras el draft?" — su score
   // depende MECÁNICAMENTE del volumen de mensajes entrantes, no de la calidad
@@ -192,13 +217,18 @@ async function detectOutcomesRegression(): Promise<AlertInput[]> {
 
   const alerts: AlertInput[] = [];
   for (const [graderId, recentVal] of recentAgg.entries()) {
-    if (recentVal.count < 5) continue;
+    if (recentVal.count < REGRESION_MIN_MUESTRAS) continue;
     if (recentVal.slug === "lead_replied" && inboundVolumeCollapsed) continue;
     const baseVal = baseAgg.get(graderId);
-    if (!baseVal || baseVal.count < 5) continue;
+    if (!baseVal || baseVal.count < REGRESION_MIN_MUESTRAS) continue;
     const recentAvg = recentVal.sum / recentVal.count;
     const baseAvg = baseVal.sum / baseVal.count;
-    if (recentAvg < 0.7 * baseAvg) {
+    // Error estándar de la diferencia de las dos medias.
+    const se = Math.sqrt(
+      varianza(recentVal) / recentVal.count + varianza(baseVal) / baseVal.count
+    );
+    const significativa = baseAvg - recentAvg > REGRESION_SIGMAS * se;
+    if (recentAvg < 0.7 * baseAvg && significativa) {
       // Una alerta por grader por día (usamos ref_id = hash determinístico día+grader)
       const dayKey = new Date().toISOString().slice(0, 10);
       // Truco: simulamos un UUID determinístico usando un hash simple, pero como
@@ -207,8 +237,11 @@ async function detectOutcomesRegression(): Promise<AlertInput[]> {
         kind: "outcomes_regression",
         severity: "warning",
         title: `Regresión en grader ${recentVal.slug}`,
-        description: `Score 24h ${recentAvg.toFixed(3)} (n=${recentVal.count}) vs 7d prev ${baseAvg.toFixed(3)} (n=${baseVal.count}). Caída ${Math.round((1 - recentAvg / baseAvg) * 100)}%.`,
-        metadata: { grader_id: graderId, day: dayKey, recent_avg: recentAvg, base_avg: baseAvg },
+        description: `Score 24h ${recentAvg.toFixed(3)} (n=${recentVal.count}) vs 7d prev ${baseAvg.toFixed(3)} (n=${baseVal.count}). Caída ${Math.round((1 - recentAvg / baseAvg) * 100)}%, fuera del margen de ruido (±${(REGRESION_SIGMAS * se).toFixed(3)}).`,
+        metadata: {
+          grader_id: graderId, day: dayKey, recent_avg: recentAvg, base_avg: baseAvg,
+          recent_n: recentVal.count, base_n: baseVal.count, se,
+        },
       });
     }
   }
@@ -283,6 +316,57 @@ async function resolveRecoveredProviderCredit(): Promise<number> {
       resolved++;
     } catch (err) {
       console.error("resolveRecoveredProviderCredit:", err instanceof Error ? err.message : String(err));
+    }
+  }
+  return resolved;
+}
+
+// ---- Cierre automatico del silencio de inbound ----
+// El webhook se sana solo (ver ensureKommoWebhookHealthy), pero la alerta
+// critica se quedaba abierta y en rojo en la Torre para siempre: habia dos del
+// 5-sep con el inbound funcionando desde entonces (27 mensajes en 24h). Una
+// alerta que ya no describe la realidad es peor que ninguna, porque entrena a
+// no mirarlas.
+//
+// Se cierra cuando llego CUALQUIER evento de inbound_queue DESPUES de la
+// alerta: eso es, por definicion, que el silencio termino. Mismo mecanismo que
+// resolveRecoveredProviderCredit — se marca acknowledged_at, que es lo que la
+// Torre usa para decidir que muestra.
+async function resolveRecoveredInboundSilence(): Promise<number> {
+  const { data: openAlerts } = await supabase
+    .from("alerts")
+    .select("id, created_at, metadata")
+    .eq("kind", "inbound_silence")
+    .is("acknowledged_at", null);
+
+  let resolved = 0;
+  for (const alert of (openAlerts ?? []) as Array<{
+    id: string;
+    created_at: string;
+    // deno-lint-ignore no-explicit-any
+    metadata: any;
+  }>) {
+    try {
+      const { data: llego } = await supabase
+        .from("inbound_queue")
+        .select("id")
+        .gt("created_at", alert.created_at)
+        .limit(1)
+        .maybeSingle();
+      if (!llego) continue;
+
+      const prevMeta = alert.metadata ?? {};
+      const { error } = await supabase
+        .from("alerts")
+        .update({
+          acknowledged_at: new Date().toISOString(),
+          metadata: { ...prevMeta, resolved_by: "auto:inbound-recuperado" },
+        })
+        .eq("id", alert.id);
+      if (error) throw new Error(error.message);
+      resolved++;
+    } catch (err) {
+      console.error("resolveRecoveredInboundSilence:", err instanceof Error ? err.message : String(err));
     }
   }
   return resolved;
@@ -550,7 +634,10 @@ Deno.serve(async (req: Request) => {
 
   try {
     const runtimeCfg = await loadConfig(supabase);
-    const [failed, review, regression, silence, webhookHealth, capsExceeded, providerCreditResolved] = await Promise.all([
+    const [
+      failed, review, regression, silence, webhookHealth, capsExceeded,
+      providerCreditResolved, silenceResolved,
+    ] = await Promise.all([
       detectFailedDrafts(),
       detectHumanReviewNeeded(),
       detectOutcomesRegression(),
@@ -558,6 +645,7 @@ Deno.serve(async (req: Request) => {
       ensureKommoWebhookHealthy(runtimeCfg),
       detectAndEnforceUsageCaps(runtimeCfg),
       resolveRecoveredProviderCredit(),
+      resolveRecoveredInboundSilence(),
     ]);
     const newAlerts = [...failed, ...review, ...regression, ...silence, ...webhookHealth, ...capsExceeded];
 
@@ -581,6 +669,7 @@ Deno.serve(async (req: Request) => {
           kommo_webhook_health: webhookHealth.length,
           usage_cap_exceeded: capsExceeded.length,
           provider_credit_resolved: providerCreditResolved,
+          inbound_silence_resolved: silenceResolved,
         },
       }),
       { status: 200, headers: { "content-type": "application/json" } }
