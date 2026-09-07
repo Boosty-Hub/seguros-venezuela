@@ -146,10 +146,18 @@ export async function getKommoState() {
 
 /**
  * Filtro Postgrest (OR, ilike) que solo deja pasar tickets "sin asesor real":
- * el campo Asesor de Zoho vale "No tengo", "Sin Asesor", "Sin Asesor (KG)",
- * "Seguros Venezuela", "Directo Caracas" o "No Posee" (con variantes de
+ * el campo Asesor de Zoho esta NULL/vacio (cliente final que llego sin
+ * corredor, o dato incompleto) o vale "No tengo", "Sin Asesor", "Sin Asesor
+ * (KG)", "Seguros Venezuela", "Directo Caracas" o "No Posee" (con variantes de
  * mayusculas/espacios/sufijos como ", C.A."). El resto de tickets SI tienen un
- * asesor/corredor asignado y no deben entrar al CRM.
+ * asesor/corredor asignado y van al embudo B2B.
+ *
+ * El asesor.is.null es imprescindible, no decorativo: un ilike contra NULL
+ * devuelve NULL, no true, asi que sin esa clausula los tickets con asesor NULL
+ * no matchean aca — y FILTRO_CON_ASESOR los excluye con not.is.null. Quedaban
+ * en el limbo, sin lead en ningun embudo (18 tickets atascados entre el 4 ago y
+ * el 4 sep de 2026). Los dos filtros deben ser PARTICION EXACTA: sin huecos
+ * (ticket que nunca se empuja) y sin solapamiento (lead duplicado).
  *
  * OJO con los patrones de "Directo": el ilike es *directo*caracas*, NO *directo*.
  * En Zoho existen tambien "DIRECTO VALENCIA", "DIRECTO SAN CRISTOBAL" y
@@ -157,8 +165,8 @@ export async function getKommoState() {
  * — un patron *directo* los arrastraria a B2C por error.
  */
 const FILTRO_SIN_ASESOR =
-  'or=(asesor.ilike.*no*tengo*,asesor.ilike.*sin*asesor*,asesor.ilike.*seguros*venezuela*' +
-  ',asesor.ilike.*directo*caracas*,asesor.ilike.*no*posee*)';
+  'or=(asesor.is.null,asesor.eq.,asesor.ilike.*no*tengo*,asesor.ilike.*sin*asesor*' +
+  ',asesor.ilike.*seguros*venezuela*,asesor.ilike.*directo*caracas*,asesor.ilike.*no*posee*)';
 
 /**
  * Tickets que todavia no tienen lead en Kommo y son POSTERIORES al corte.
@@ -188,13 +196,15 @@ export async function getTicketsPendingKommo({ since, limit = 200 } = {}) {
 
 /**
  * Filtro inverso: tickets CON asesor/corredor real asignado — es decir,
- * cualquier valor de Asesor que NO cumpla FILTRO_SIN_ASESOR. Excluye ademas
- * asesor null/vacio (dato incompleto, no se asume corredor). Estos son los que
- * van al embudo B2B (corredores que cotizan via Sofi u otras plataformas) en
- * vez del B2C.
+ * cualquier valor de Asesor que NO cumpla FILTRO_SIN_ASESOR. Excluye asesor
+ * null/vacio, que por regla de negocio va a B2C (cliente sin corredor). Estos
+ * son los que van al embudo B2B (corredores que cotizan via Sofi u otras
+ * plataformas) en vez del B2C.
  *
- * Debe ser el complemento EXACTO de FILTRO_SIN_ASESOR: si se agrega un valor
- * alla y no se excluye aca, el mismo ticket calificaria para los dos embudos.
+ * Debe ser el complemento EXACTO de FILTRO_SIN_ASESOR, en los dos sentidos: si
+ * se agrega un valor alla y no se excluye aca, el ticket califica para los dos
+ * embudos y se duplica el lead; si un valor no cae en ninguno de los dos, el
+ * ticket no se empuja nunca (ver la nota del NULL en FILTRO_SIN_ASESOR).
  */
 const FILTRO_CON_ASESOR =
   'asesor=not.is.null' +

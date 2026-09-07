@@ -58,18 +58,28 @@ function normalizePhone(raw: unknown): string | null {
 
 // ---------------- Filtros de Asesor (puerto de sync/lib/supa.mjs) ----------------
 // Mantener EN SINCRONÍA con sync/lib/supa.mjs: son las mismas reglas en dos
-// runtimes (este cron y el script de Node). Y CON_ASESOR debe ser el
-// complemento exacto de SIN_ASESOR, o un ticket calificaría para los dos embudos.
+// runtimes (este cron y el script de Node). Los dos filtros deben ser PARTICIÓN
+// EXACTA del universo de tickets: si un valor de Asesor no cae en ninguno, el
+// ticket no se empuja nunca; si cae en los dos, se crea un lead duplicado.
 //
-// B2C: "sin asesor real" (No tengo / Sin Asesor / Sin Asesor (KG) / Seguros
-// Venezuela / Directo Caracas / No Posee).
+// Se cuidó el solapamiento pero no el hueco, y el hueco existía: los ilike de
+// SIN_ASESOR devuelven NULL (no true) cuando asesor es NULL, y CON_ASESOR los
+// excluía con not.is.null — así que TODO ticket con asesor NULL quedaba en el
+// limbo. 18 tickets atascados entre el 4 ago y el 4 sep de 2026 hasta que se
+// agregó asesor.is.null acá. La vista del pipeline sí los veía, como
+// 'sin_atribucion' (ver 0064_zoho_pipeline_b2c_b2b.sql), lo que hacía el hueco
+// más difícil de notar: aparecían contados en el módulo pero sin lead.
+//
+// B2C: "sin asesor real" — asesor NULL/vacío (cliente final que llegó sin
+// corredor, o dato incompleto) o No tengo / Sin Asesor / Sin Asesor (KG) /
+// Seguros Venezuela / Directo Caracas / No Posee.
 // OJO: el patrón es *directo*caracas*, NO *directo*. En Zoho hay también
 // "DIRECTO VALENCIA", "DIRECTO SAN CRISTOBAL" y "Directo" suelto, que por
 // decisión del operador siguen yendo a B2B.
 const FILTRO_SIN_ASESOR =
-  "or=(asesor.ilike.*no*tengo*,asesor.ilike.*sin*asesor*,asesor.ilike.*seguros*venezuela*" +
-  ",asesor.ilike.*directo*caracas*,asesor.ilike.*no*posee*)";
-// B2B: inverso — asesor real asignado (excluye null/vacío).
+  "or=(asesor.is.null,asesor.eq.,asesor.ilike.*no*tengo*,asesor.ilike.*sin*asesor*" +
+  ",asesor.ilike.*seguros*venezuela*,asesor.ilike.*directo*caracas*,asesor.ilike.*no*posee*)";
+// B2B: inverso — asesor real asignado (excluye null/vacío, que van a B2C).
 const FILTRO_CON_ASESOR =
   "asesor=not.is.null&asesor=neq.&asesor=not.ilike.*no*tengo*&asesor=not.ilike.*sin*asesor*&asesor=not.ilike.*seguros*venezuela*" +
   "&asesor=not.ilike.*directo*caracas*&asesor=not.ilike.*no*posee*";

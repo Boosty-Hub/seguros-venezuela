@@ -92,12 +92,12 @@ Para apagarlo: `/agent` → "Agente activo" (para todo) o "Publicar en Kommo"
 - Fuente: `zoho_pipeline_overview()`, `zoho_corredor_detalle()` y
   `zoho_pipeline_analitica()` (migraciones 0064-0066), que leen la vista
   materializada **`mv_zoho_clasificacion`** (0067): precalcula la clasificación
-  de los 14.427 tickets, refrescada por cron un minuto después del sync
+  de los ~15.000 tickets, refrescada por cron un minuto después del sync
   (`zoho-refrescar-clasificacion`, 1s). Sin eso cada carga recalculaba los
   regex fila por fila y la página tardaba el doble.
-- Datos tras enriquecer 9.998 tickets con el Asesor que faltaba: **B2C ~2.550 ·
-  B2B ~11.760 · sin atribución 113** (99,2% clasificado), ~1.120 corredores,
-  ~8.360 clientes finales.
+- Datos al 06-09 (15.055 tickets no-spam): **B2C 2.649 · B2B 12.286 · sin
+  atribución 120** (99,2% clasificado), 1.163 corredores, ~11.000 clientes
+  finales (8.780 del lado B2B).
 
 ### Alertas abiertas
 
@@ -169,11 +169,21 @@ se relee completo** cada vez.
 `tickets_ya_en_kommo()`, dedupe dentro del lote y `meta_leads_solapados()`.
 Clave: `asunto + contacto + titular` (`ticket_dedup_key()`).
 
-**Filtro B2C:** migran a `VENTAS B2C` los tickets con `Asesor` = "No tengo" /
-"Sin Asesor" / "Sin Asesor (KG)" / "Seguros Venezuela" / "Directo Caracas" /
-"No Posee" (`ilike`). **B2B (inverso):** el resto (corredores con nombre real)
-va a `VENTAS B2B` → "DATA ZOHO DESK". La misma regla vive en SQL como
-`zoho_destino(asesor)`, para que la vista no se desincronice de lo que migra.
+**Filtro B2C:** migran a `VENTAS B2C` los tickets con `Asesor` **NULL/vacío**
+(cliente final que llegó sin corredor) o = "No tengo" / "Sin Asesor" / "Sin
+Asesor (KG)" / "Seguros Venezuela" / "Directo Caracas" / "No Posee" (`ilike`).
+**B2B (inverso):** el resto (corredores con nombre real) va a `VENTAS B2B` →
+"DATA ZOHO DESK". Los dos filtros tienen que ser **partición exacta**: un hueco
+deja tickets sin empujar para siempre (trampa 24), un solapamiento duplica el
+lead. Viven en **dos runtimes que se tocan juntos**:
+`supabase/functions/zoho-kommo-push/index.ts` (el cron) y `sync/lib/supa.mjs`
+(el script Node).
+
+En SQL, `zoho_destino(asesor)` mantiene **a propósito** un tercer valor,
+`sin_atribucion`, para los NULL/vacío: en Kommo van a B2C, pero `/pipeline` los
+cuenta aparte porque no hay corredor al que atribuirlos — es la medida de lo
+sucio que está el dato en Zoho (PENDIENTE 6). Routing y reporte difieren ahí
+deliberadamente; no es una desincronización que haya que "arreglar".
 
 ### Rendimiento medido (2026-08-29)
 
@@ -202,8 +212,12 @@ navegando el dashboard: **15/15 respondidas, 0 errores, $0,51**.
    servicio y apuntar `META_SHEET_CSV_URL`.
 4. Decidir qué hacer con los leads `revisar-asesor`.
 5. Definir topes reales en `/consumo` (hoy sin tope).
-6. Limpiar en Zoho los 113 tickets con `Asesor` vacío y los nombres de corredor
+6. Limpiar en Zoho los 120 tickets con `Asesor` vacío (desde el 06-09 ya migran
+   a B2C, pero siguen sin corredor atribuible) y los nombres de corredor
    escritos de varias formas, que hoy cuentan como corredores distintos.
+7. Que `zoho-sync` escriba `sync_state` en cada corrida: hoy solo lo hace el
+   script Node y la tabla aparenta un sync caído con el pipeline sano
+   (trampa 25).
 
 **Vencimientos:** token de Kommo **2027-10-30** (ese día deja de crearse
 cualquier lead). Refresh token de Zoho sin caducidad conocida, pero revocable.
@@ -337,6 +351,30 @@ Edge Functions: `npx supabase functions deploy <slug> --project-ref
     lead. `publish-to-kommo` lo detecta con `fetchLeadStage` antes de agotar
     los 3 reintentos (nunca iba a funcionar, el lead no se reabre solo).
 
+24. **Un `ilike` contra NULL devuelve NULL, no `false`** — y entre dos filtros
+    "inversos" eso abre un HUECO, no un solapamiento. El filtro B2C
+    (`or=(asesor.ilike...)`) no matcheaba los `asesor` NULL y el B2B los
+    excluía con `not.is.null`: los tickets sin asesor no calificaban para
+    NINGÚN embudo y se quedaban sin lead para siempre (18 atascados, 4 ago →
+    4 sep de 2026). El comentario del código se cuidaba del solapamiento y no
+    del hueco. Arreglado con `asesor.is.null` en el filtro B2C. La misma
+    trampa muerde al verificarlo en SQL: `not (asesor ilike ...)` también
+    descarta las filas NULL, así que una consulta de control escrita así
+    "demuestra" que no hay nada. Al revisar filtros complementarios, comprobar
+    las DOS direcciones y que el total sea **exactamente** la suma de las
+    partes.
+25. **`sync_state` no refleja lo que hace el cron: solo lo escribe el script
+    Node.** La Edge Function `zoho-sync` (la que corre en `pg_cron`) nunca
+    toca la tabla, así que `last_incremental_sync` y `total_tickets` quedaron
+    congelados en la última corrida de `sync/sync.mjs` (26-08) y aparentan un
+    sync caído hace días con el pipeline perfectamente sano. Medir frescura
+    con `max(tickets.synced_at)`, no con `sync_state`. Lo mismo, más leve, con
+    `kommo_last_run`/`kommo_b2b_last_run`: `pushOne` sale temprano sin
+    actualizarlos cuando no hay nada pendiente, así que en horas tranquilas se
+    ven viejos aunque el job corra cada 5 min. Y ojo con `cron.job_run_details`:
+    `succeeded` solo dice que el `net.http_post` se encoló, no que la Edge
+    Function corriera — eso se confirma con `net._http_response`.
+
 ---
 
 ## Cronología
@@ -354,6 +392,10 @@ Edge Functions: `npx supabase functions deploy <slug> --project-ref
   llevaba 3 días sin traer un ticket (trampa 1): corregido, 236 recuperados.
   Prueba de carga end-to-end (ver Rendimiento) que destapó y motivó la vista
   materializada.
+- **01-09 → 06-09**: auditoría de los tres crones del pipeline: sanos
+  (288/288 corridas en 24h, 0 fallos), pero `sync_state` no lo reflejaba
+  (trampa 25). Cerrado el hueco del `asesor` NULL (trampa 24): 18 tickets
+  atascados migrados a `VENTAS B2C`.
 - **29-08 → 01-09**: apagón del webhook de Kommo (trampa 20) y transcripción
   de audio rota al 100% (trampas 21-22), ambos arreglados con auto-sanado y
   recobro — 2 notas de voz reales atascadas se recuperaron. Auditoría de la
