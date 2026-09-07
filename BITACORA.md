@@ -4,9 +4,14 @@ Qué se hizo, dónde quedó y qué falta. **Leer esto primero** al retomar.
 
 > **Regla para actualizar** (sesión humana o agente): leer el archivo completo
 > antes de escribir. **Fusionar**, nunca agregar una sección que repita o
-> contradiga otra; si un dato cambió, **reemplazarlo**. Mantenerla **corta**:
-> cuanto más larga, menos se lee. Cifras e IDs van en "Estado actual"; las
-> trampas no se repiten arriba.
+> contradiga otra; si un dato cambió, **reemplazarlo**. Cifras e IDs van en
+> "Estado actual"; las trampas no se repiten arriba.
+>
+> **Tope: 700 líneas** (era 500 hasta el 07-09; se subió porque tres sesiones
+> seguidas obligaron a comprimir diagnóstico real de las trampas para caber).
+> El tope existe porque un archivo más largo no se lee completo. Más margen NO
+> es permiso para rellenar: el espacio extra es para el diagnóstico de las
+> trampas, no para decir dos veces lo mismo.
 
 - **Repo:** `Boosty-Hub/seguros-venezuela` (público), rama `main`
 - **Supabase:** `lwqqnnefywsjaatuyjma`
@@ -206,6 +211,33 @@ Las comisiones van con desglose por corredor, por decisión del operador. No
 están la fecha ni el motivo real de anulación porque el CSV no los trae (ver
 cabecera de la 0077), y ojo con `Prima_Anual`, que no es anual: trampa 29.
 
+### Sincronizar el prompt del agente
+
+El system prompt NO vive en este repo ni en la DB: vive en el **Managed Agent de
+Anthropic**, y es la composición de `runtime_config.SYSTEM_PROMPT` (la voz,
+editable) + el `CORE_SCAFFOLD` de `web/src/lib/agent-prompt-core.mjs` (la
+maquinaria: flujo obligatorio, formato, seguridad). Editar el `.mjs` **no cambia
+nada** hasta sincronizar.
+
+Lo empuja `syncAgentTools()`, que corre desde `/agent` al guardar (admin) y
+también al tocar los interruptores de `/api/agent/{bcv,crm-actions,shopify-actions}`.
+Manda **prompt Y tools juntos**, así que antes de sincronizar hay que comprobar
+que las tools de la DB coincidan con las del agente vivo, o se despliega más de
+lo que se cree:
+
+```
+GET https://api.anthropic.com/v1/agents/<ANTHROPIC_AGENT_ID>?beta=true
+  x-api-key: <ANTHROPIC_API_KEY>   (los dos están en runtime_config)
+  anthropic-beta: managed-agents-2026-04-01
+```
+
+Compara sus `tools` con `filterToolRowsByGates(agent_tools, kommo_publish_config)`
+y su `system` con `composeSystem(...)`. Al 07-09: 7 tools idénticas
+(`agent_toolset_20260401`, `search_kb`, `mover_etapa`, `marcar_perdido`,
+`actualizar_lead`, `actualizar_contacto`, `enviar_imagen`) y prompt idéntico.
+Las 5 de Shopify y `tasa_bcv` NO se declaran porque sus gates están apagados —
+declararlas costaría tokens en cada turno e invitaría a llamadas inventadas.
+
 ### Rendimiento medido (2026-08-29)
 
 15 conversaciones simultáneas + 4 usuarios navegando: **15/15 respondidas, 0
@@ -246,11 +278,11 @@ bajó de 1.500-1.800ms a 765-810ms con la vista materializada. Netlify devuelve
    cuando no se necesite. Credenciales en `web/.env.local`, no versionado.
 11. Atender en Kommo las **17 alertas `human_review_needed`**, que incluyen las
    3 conversaciones que el agente dejó muda por devolver vacío (trampa 32).
-12. **Sincronizar el prompt** desde `/agent` para activar la regla nueva de
-   `agent-prompt-core.mjs` ("no des por supuesto ningún dato que el lead no haya
-   dicho"). El CORE_SCAFFOLD vive en el Managed Agent y solo se actualiza con
-   `syncAgentTools()`, que empuja prompt **y** tools: de ahí que no se disparara
-   sin revisar que las tools de la DB coincidan con las del agente vivo.
+12. ~~Sincronizar el prompt~~ **HECHO el 07-09**: el agente vivo está en la
+   versión 15 con la regla "no des por supuesto ningún dato que el lead no haya
+   dicho", y el diff entre `agent-prompt-core.mjs` y el prompt del Managed Agent
+   es de **cero líneas en los dos sentidos**. Ver "Sincronizar el prompt" más
+   abajo para cómo se hace y cómo verificarlo.
 
 **Vencimientos:** token de Kommo **2027-10-30** (ese día deja de crearse
 cualquier lead). Refresh token de Zoho sin caducidad conocida, pero revocable.
@@ -371,10 +403,12 @@ se hace desde `/agent`, y es lo que empuja el prompt).
     "inversos" eso abre un HUECO, no un solapamiento. El B2C no matcheaba los
     `asesor` NULL y el B2B los excluía con `not.is.null`: los tickets sin asesor
     no calificaban para NINGÚN embudo y se quedaban sin lead para siempre (18
-    atascados, 4 ago → 4 sep). La misma trampa muerde al verificarlo: `not
-    (asesor ilike ...)` también descarta las filas NULL, así que la consulta de
-    control "demuestra" que no hay nada. Comprobar las DOS direcciones, y que el
-    total sea **exactamente** la suma de las partes.
+    atascados, 4 ago → 4 sep). Arreglado agregando `asesor.is.null` (y
+    `asesor.eq.` por el vacío) al filtro B2C, en los dos runtimes. La misma
+    trampa muerde al verificarlo: `not (asesor ilike ...)` también descarta las
+    filas NULL, así que la consulta de control "demuestra" que no hay nada.
+    Comprobar las DOS direcciones, y que el total sea **exactamente** la suma de
+    las partes.
 25. **`sync_state` no refleja lo que hace el cron: solo lo escribe el script
     Node.** La Edge Function `zoho-sync` (la del `pg_cron`) nunca toca la tabla,
     así que `last_incremental_sync` y `total_tickets` se congelaron en la última
@@ -490,6 +524,8 @@ se hace desde `/agent`, y es lo que empuja el prompt).
 - **07-09**: auditoría completa (sin drift entre repo y producción, 12 crones
   sin fallos, 0 pendientes en los embudos). Destapó la **fuga de las vistas**
   (trampa 33) y se cerró. Contador de mensajes por conversación en `/inbox`.
+  Prompt del agente sincronizado (v15) tras verificar que el sync solo cambiaba
+  esa línea. Tope de la bitácora subido de 500 a 700 líneas.
 - **06-09**: módulo de **efectividad de corredores** (carga mensual con
   preview, `corredor_alias`, dos porcentajes declarados como suelo — trampas
   26-27; la primera versión daba 0,2% por medir la madurez contra `now()`),
