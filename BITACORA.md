@@ -47,7 +47,10 @@ Para apagarlo: `/agent` → "Agente activo" (para todo) o "Publicar en Kommo"
   Para callar a propósito, el agente emite `<respuesta></respuesta>` vacío.
 - **Tono concreto**: no cierra con preguntas redundantes; al escalar dice que
   un asesor ya tiene el caso y ofrece allanar o cotizar. Clientes molestos van
-  al correo de ATC.
+  al correo de ATC, **salvo que lo que no llegó sea una cotización**: eso es una
+  venta viva y tiene sección propia desde el 09-09 — pide los 5 datos (nombre,
+  fecha de nacimiento, cédula, teléfono, correo) con la plantilla literal del
+  operador y escala solo cuando el cliente los manda (trampa 37).
 - **Acciones de CRM** (`mover_etapa`, `marcar_perdido`, `enviar_imagen`,
   `actualizar_lead/contacto`) **corren contra Kommo real aunque "Publicar en
   Kommo" esté apagado**: ese interruptor solo gobierna los MENSAJES.
@@ -231,6 +234,11 @@ editable) + el `CORE_SCAFFOLD` de `web/src/lib/agent-prompt-core.mjs` (la
 maquinaria: flujo obligatorio, formato, seguridad). Editar el `.mjs` **no cambia
 nada** hasta sincronizar.
 
+La **voz sí está versionada**, en `agent/system-prompt.md`: es lo que
+`provision-agent.mjs` escribe en `runtime_config.SYSTEM_PROMPT`. Editar ahí es
+el camino para cambiar el comportamiento del agente (la vertical activa se toca
+en `/verticales`, que es DB y no repo), y luego se sincroniza.
+
 Lo empuja `syncAgentTools()`, que corre desde `/agent` al guardar (admin) y
 también al tocar los interruptores de `/api/agent/{bcv,crm-actions,shopify-actions}`.
 Manda **prompt Y tools juntos**, así que antes de sincronizar hay que comprobar
@@ -244,7 +252,7 @@ GET https://api.anthropic.com/v1/agents/<ANTHROPIC_AGENT_ID>?beta=true
 ```
 
 Compara sus `tools` con `filterToolRowsByGates(agent_tools, kommo_publish_config)`
-y su `system` con `composeSystem(...)`. Al 07-09 va en **v16**: 7 tools idénticas
+y su `system` con `composeSystem(...)`. Al 09-09 va en **v17**: 7 tools idénticas
 (`agent_toolset_20260401`, `search_kb`, `mover_etapa`, `marcar_perdido`,
 `actualizar_lead`, `actualizar_contacto`, `enviar_imagen`) y prompt idéntico.
 Las 5 de Shopify y `tasa_bcv` NO se declaran porque sus gates están apagados —
@@ -292,12 +300,13 @@ bajó de 1.500-1.800ms a 765-810ms con la vista materializada. Netlify devuelve
    17-19 de agosto (apagón de saldo, trampa 30), nunca recibieron respuesta y
    ya pasaron tres semanas. Incluyen dos cancelaciones de póliza y un "no me
    iré con ustedes entonces".
-12. ~~Sincronizar el prompt~~ **HECHO el 07-09**: el agente vivo está en la
-   versión **16** (v15 fue la regla "no des por supuesto ningún dato que el lead
-   no haya dicho"; v16, la reja de envío y la prioridad de las reglas duras), y
-   el diff entre `agent-prompt-core.mjs` y el prompt del Managed Agent es de
-   **cero líneas en los dos sentidos**. Ver "Sincronizar el prompt" más abajo
-   para cómo se hace y cómo verificarlo.
+12. ~~Sincronizar el prompt~~ **HECHO; al día el 09-09**: el agente vivo está en
+   la versión **17** (v15 fue la regla "no des por supuesto ningún dato que el
+   lead no haya dicho"; v16, la reja de envío y la prioridad de las reglas
+   duras; v17, la sección de cotización no recibida, trampa 37), y el diff entre
+   el repo y el prompt del Managed Agent es de **cero líneas en los dos
+   sentidos**. Ver "Sincronizar el prompt" más abajo para cómo se hace y cómo
+   verificarlo.
 13. **Que un mensaje rechazado por la reja levante alerta en la Torre**
    (trampa 35). Hoy queda en `agent_metadata.correcciones_mensaje`, en el
    `publish_error` del draft y en el log, pero **nada avisa**: los 6 acuses
@@ -609,6 +618,29 @@ se hace desde `/agent`, y es lo que empuja el prompt).
     Lección: un destilador al que no le das la política escribe la suya, y a la
     tercera consolidación ya nadie sabe de dónde salió la regla.
 
+37. **Una regla para "clientes molestos" se tragó una venta viva.** Una clienta
+    escribió "pedí cotización por el centro de atención telefónica y no me
+    mandaron la información, y por acá tampoco responden". El agente contestó
+    con el buzón de ATC pidiéndole **cédula y número de póliza** y movió el lead
+    a "cliente por atender". Las tres cosas fallaban: no es asegurada, así que
+    no hay póliza que citar; lo que pedía era un precio, no el registro de un
+    reclamo; y devolverla al call center la manda al canal que ya le falló. Ella
+    cerró con "Gracias" y se fue.
+    La regla no estaba mal escrita, estaba mal **delimitada**: "reclamo, demora,
+    promesa incumplida" describe igual de bien a un asegurado esperando un
+    reembolso que a un prospecto esperando una cotización, y el remedio es
+    OPUESTO (uno se registra formalmente, el otro se cotiza aquí mismo). Como la
+    sección de reclamos se enunciaba primero, se llevaba los dos casos.
+    Arreglado con una sección propia ANTES de la de reclamos, con la plantilla
+    literal del operador (5 datos numerados + grupo familiar) y su excepción
+    declarada a la regla de largo — 60 palabras no dan para la lista, y una
+    excepción a una regla dura hay que escribirla en la regla dura misma o el
+    orden de prioridad del scaffold la descarta. `mover_etapa` va **después** de
+    recibir los datos, no antes: escalar primero y no cotizar repetiría la falla
+    de la que se queja.
+    Lección: cuando dos casos comparten el síntoma y no el remedio, matizar la
+    regla no alcanza — hay que sacar el caso a su propia sección.
+
 ---
 
 ## Cronología
@@ -650,3 +682,10 @@ se hace desde `/agent`, y es lo que empuja el prompt).
   tres pestañas** (trampa 29: `Prima_Anual` no es anual) y **15 tests e2e** con
   Playwright contra el Supabase real. De paso, `zoho_alias_pendientes()` de
   1,77 s a 0,12 s y `zoho_corredores_efectividad()` de 2,5 s a 0,15 s.
+- **09-09**: un caso real del operador destapó la **trampa 37** — la regla de
+  "clientes molestos" le dio el buzón de ATC a una clienta que solo esperaba una
+  cotización. El prompt tiene ahora sección propia para ese caso, con la
+  plantilla literal del operador normalizada a tuteo (la suya mezclaba tú y
+  usted, y el prompt lo prohíbe) y la pregunta del grupo familiar reformulada
+  para que se pueda contestar. Agente a **v17**: 7 tools idénticas antes y
+  después, diff cero contra el repo al verificarlo.
