@@ -107,10 +107,9 @@ Para apagarlo: `/agent` → "Agente activo" (para todo) o "Publicar en Kommo"
   acaba leyendo un número creyendo que es otro.
 - **`/verticales`**: columna **Mensajes · 7d · %** con lo que el clasificador
   metió en cada vertical (`verticales_uso()`, 0078). El pie **reconcilia**, que
-  es lo que evita leer la suma como si faltaran registros: 611 entrantes =
-  clasificados + ignorados a propósito (etapa del lead o media off, nunca llegan
-  al clasificador) + fallidos. Una vertical sin uso muestra "—", no "0", que se
-  leería como "se evaluó y nunca encajó".
+  evita leer la suma como si faltaran registros: 611 entrantes = clasificados +
+  ignorados a propósito (etapa del lead o media off) + fallidos. Una vertical
+  sin uso muestra "—", no "0", que se leería como "se evaluó y nunca encajó".
 
 ### Alertas abiertas
 
@@ -134,10 +133,9 @@ con `kommo_webhook_reconnected` / `..._failed`.
 ### Bitácora propia (`system_logs`)
 
 El Log Drain oficial cuesta $60/mes — descartado. En su lugar, tabla propia
-`system_logs` (0069; retención en `runtime_config`, 30 días, con cron de
-limpieza) + `_shared/system-log.ts` (`logEvent`, fail-soft), instrumentada a
-mano en `kommo-webhook`, `process-inbound` y los dos workers de KB. Es
-instrumentación puntual de lo que ya mordió, no cobertura.
+`system_logs` (0069; retención 30 días con cron de limpieza) +
+`_shared/system-log.ts` (`logEvent`, fail-soft), instrumentada a mano en
+`kommo-webhook`, `process-inbound` y los workers de KB: puntual, no cobertura.
 
 ### Transcripción de notas de voz (Whisper)
 
@@ -241,12 +239,13 @@ a 765-810ms con la materializada. Netlify da 403 tras ~66 cargas seguidas.
 
 ## PENDIENTE
 
-1. Cargar KB real en cada vertical (tarifarios, condicionados, FAQs); la
-   mayoría sigue sin ninguno. Los **condicionados escaneados** ya se pueden
-   subir desde el 10-09, sin tope práctico de páginas (cola de la 0080), pero
-   estrénala primero con uno (PENDIENTE 14). **Volver a subir "Flyer RCV" y
-   "Flyer marcotas"**: se cargaron antes del validador y su texto quedó
-   corrupto.
+1. Cargar KB real en cada vertical; la mayoría sigue sin ninguno. Los
+   **condicionados escaneados** ya se pueden subir sin tope práctico de páginas
+   (cola de la 0080), pero estrénala con uno (PENDIENTE 14). Auditoría del
+   11-09 sobre los 5 documentos / 31 chunks que hay: sanos salvo **"Flyer RCV"
+   y "Flyer marcotas"**, que siguen ILEGIBLES (largo medio de palabra 12,7 y
+   8,8 contra 5,9 del resto — se cargaron antes del validador). Hay que volver
+   a subirlos: ahora `looksMangled` los manda a visión y entran bien.
 2. Borrar a mano en Kommo los leads etiquetados `duplicado` y los 15 de
    `prueba-carga` (ya en Perdido). La API no borra leads (trampa 2).
 3. Restringir la hoja de Google de Meta Ads (hoy `anyone: commenter`, expone
@@ -657,9 +656,8 @@ se hace desde `/agent`, que es lo que empuja el prompt).
 - **19-08 → 26-08**: **agente en vivo**. Multimedia, 3 verticales, Torre de
   Control, `/analitica` e `/inbox` rehechos, pipeline pasado a `pg_cron`.
 - **26-08 → 29-08**: endurecimiento. `marcar_perdido`, auto-sanado de etapa,
-  reintentos de publicación, `matchStagesByName`, validador de KB con visión,
-  9.998 tickets enriquecidos y módulo `/pipeline` B2C/B2B; `zoho-sync` llevaba
-  3 días mudo (trampa 1) y se recuperaron 236 tickets.
+  reintentos de publicación, `matchStagesByName`, validador de KB con visión y
+  módulo `/pipeline` B2C/B2B; `zoho-sync` llevaba 3 días mudo (trampa 1).
 - **29-08 → 01-09**: apagón del webhook de Kommo (trampa 20) y audio roto al
   100% (trampas 21-22), los dos con auto-sanado. Auditoría de la Torre.
 - **01-09 → 06-09**: los tres crones auditados y sanos (288/288 en 24h) aunque
@@ -672,9 +670,8 @@ se hace desde `/agent`, que es lo que empuja el prompt).
   casos del operador destaparon las **trampas 35 y 36**. Agente a **v16**.
 - **06-09**: módulo de **efectividad de corredores** (carga mensual con
   preview, `corredor_alias`, dos porcentajes declarados como suelo), **Revisar
-  corredores** con ponderación por rareza, analítica de emisiones en cajón
-  flotante y los primeros e2e — trampas 26-29 de por medio. De paso,
-  `zoho_alias_pendientes()` 1,77 s → 0,12 s y `..._efectividad()` 2,5 s → 0,15 s.
+  corredores** con ponderación por rareza, analítica en cajón flotante y los
+  primeros e2e — trampas 26-29. `zoho_alias_pendientes()` 1,77 s → 0,12 s.
 - **09-09**: un caso real destapó la **trampa 37** — la regla de "clientes
   molestos" se tragó una venta viva. El prompt tiene ahora sección propia para
   ese caso, con la plantilla del operador normalizada a tuteo. Agente a **v17**,
@@ -697,4 +694,7 @@ se hace desde `/agent`, que es lo que empuja el prompt).
   que el typecheck no ve: el filtro en `actions` aplastaba el título a una
   palabra por línea, y el widget fijo de soporte tapaba la pestaña "Embudo
   Zoho" lo bastante como para no poder **clicarla** (nadie lo había visto
-  porque los tests viejos navegan por URL). Arregladas.
+  porque los tests viejos navegan por URL). Arregladas. Y auditada la KB ya
+  indexada: 29 de 31 chunks llevaban dentro el marcador de página de la trampa
+  38 —"PLANES SUMAS ASEGURADAS -- 19 of 60 --"—, limpiados y re-embebidos.
+  Recuperación comprobada: 4/4 preguntas traen su chunk en 1ª posición.
