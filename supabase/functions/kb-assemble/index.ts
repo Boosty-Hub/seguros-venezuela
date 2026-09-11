@@ -84,7 +84,7 @@ Deno.serve(async (req: Request) => {
         .update({ status: "ensamblando", claimed_at: new Date().toISOString() })
         .eq("id", soloJob)
         .in("status", ["transcribiendo", "aprobado"])
-        .select("id, title, vertical_id, storage_path, filename, ext")
+        .select("id, title, vertical_id, storage_path, filename, ext, reemplaza_document_id")
         .maybeSingle();
       if (data) jobs = [{ ...(data as Omit<Job, "aprobado">), aprobado: eraAprobado }];
     }
@@ -131,6 +131,8 @@ type Job = {
   filename: string;
   ext: string;
   aprobado: boolean;
+  /** Reproceso: documento al que sustituye este job (0085). */
+  reemplaza_document_id?: string | null;
 };
 
 function json(body: unknown, status = 200) {
@@ -338,12 +340,32 @@ async function indexar(job: Job, texto: string) {
       })
       .eq("id", doc.id);
   }
+  // Reproceso (0085): el documento viejo se borra AHORA, no antes — así la
+  // vertical nunca se queda sin él, y si el reproceso hubiera fallado el viejo
+  // seguiría en su sitio. Se borra la fila directamente y NO por la ruta de la
+  // API: esa se lleva también el archivo del bucket, que el documento nuevo
+  // acaba de heredar. Los chunks del viejo caen por cascada.
+  if (job.reemplaza_document_id && job.reemplaza_document_id !== doc.id) {
+    const { error: eDel } = await supabase
+      .from("kb_documents")
+      .delete()
+      .eq("id", job.reemplaza_document_id);
+    if (eDel) {
+      // No se tumba el reproceso por esto: el documento nuevo ya está bien. Se
+      // deja rastro para que se pueda limpiar el duplicado a mano.
+      await logEvent(supabase, "kb-assemble", "error", "no se pudo borrar el documento reemplazado", {
+        job_id: job.id, viejo: job.reemplaza_document_id, nuevo: doc.id, error: eDel.message,
+      });
+    }
+  }
+
   await supabase
     .from("kb_ingest_jobs")
     .update({ status: "listo", texto, issues: [], document_id: doc.id, last_error: null })
     .eq("id", job.id);
   await logEvent(supabase, "kb-assemble", "info", "documento indexado", {
-    job_id: job.id, document_id: doc.id, filename: job.filename, chunks: chunks.length,
+    job_id: job.id, document_id: doc.id, filename: job.filename,
+    chunks: chunks.length, reemplaza: job.reemplaza_document_id ?? null,
   });
 }
 

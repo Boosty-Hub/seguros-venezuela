@@ -98,8 +98,25 @@ export async function DELETE(_request: Request, { params }: { params: { id: stri
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
   if (doc?.storage_path) {
-    const admin = createServiceClient();
-    await admin.storage.from(BUCKET).remove([doc.storage_path as string]).catch(() => {});
+    // El archivo se comparte durante un reproceso (0085): el job nuevo y el
+    // documento nuevo apuntan al MISMO objeto. Borrarlo acá a ciegas dejaría
+    // al que queda sin original, que es justo el problema que la 0084 vino a
+    // arreglar. Solo se borra si ya nadie lo referencia.
+    const [{ count: otrosDocs }, { count: jobsVivos }] = await Promise.all([
+      supabase
+        .from("kb_documents")
+        .select("id", { count: "exact", head: true })
+        .eq("storage_path", doc.storage_path as string),
+      supabase
+        .from("kb_ingest_jobs")
+        .select("id", { count: "exact", head: true })
+        .eq("storage_path", doc.storage_path as string)
+        .in("status", ["pendiente", "transcribiendo", "ensamblando", "revision", "aprobado"]),
+    ]);
+    if ((otrosDocs ?? 0) === 0 && (jobsVivos ?? 0) === 0) {
+      const admin = createServiceClient();
+      await admin.storage.from(BUCKET).remove([doc.storage_path as string]).catch(() => {});
+    }
   }
   return NextResponse.json({ ok: true });
 }

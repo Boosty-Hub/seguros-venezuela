@@ -29,18 +29,15 @@ Para apagarlo: `/agent` → "Agente activo" (para todo) o "Publicar en Kommo"
 
 ### Agente
 
-- **System prompt: NO editable desde el dashboard** (solo lectura en
-  `/agent`). Se cambia en `runtime_config.SYSTEM_PROMPT` o
-  `agent-prompt-core.mjs`, y sincronizando con Anthropic.
+- **System prompt: NO editable desde el dashboard** (solo lectura en `/agent`):
+  se cambia en `SYSTEM_PROMPT` o `agent-prompt-core.mjs`, y sincronizando.
 - **Prohibido TODO emoji** (trampa 15): regla en el prompt +
   `sanitizeEmojiForKommo`. **Instagram y WhatsApp SÍ son canales seguros** para
-  compartir cédula/teléfono/póliza: se acepta todo lo que manden por ahí y NO se
-  ofrece la llamada como alternativa "más segura" (un dream lo había derogado,
-  trampa 36). Un teléfono o un correo se dan **una vez por conversación**.
+  cédula/teléfono/póliza: se acepta todo y NO se ofrece la llamada como "más
+  segura" (un dream lo derogó, trampa 36). Teléfono y correo, una vez por chat.
 - **Reja antes de enviar** (trampa 35): `revisarMensajeFinal()` corre al cerrar
-  el turno y otra vez en `publish-to-kommo`. Una **fuga** vuelve al agente para
-  que la rehaga (2 vueltas, `correcciones_mensaje`); un **silencio** no envía
-  nada, y para callar a propósito emite `<respuesta></respuesta>` vacío.
+  el turno y en `publish-to-kommo`. Una **fuga** vuelve al agente; un
+  **silencio** no envía nada (`<respuesta></respuesta>` vacío para callar).
 - **Tono concreto**: no cierra con preguntas redundantes; al escalar dice que
   un asesor ya tiene el caso y ofrece allanar o cotizar. Clientes molestos van
   al correo de ATC, **salvo que lo que no llegó sea una cotización**: eso es una
@@ -50,8 +47,7 @@ Para apagarlo: `/agent` → "Agente activo" (para todo) o "Publicar en Kommo"
   Kommo" esté apagado**: ese interruptor solo gobierna los MENSAJES.
 - **`marcar_perdido`**: manda a Perdido (143) empleo, spam y leads errados, con
   una de las 11 razones de Kommo (trampa 10). **Auto-sanado de etapa**: si se
-  pierde un webhook `leads.status`, `process-inbound` consulta la etapa viva en
-  Kommo antes de ignorar el lead.
+  pierde un webhook `leads.status`, se consulta la etapa viva en Kommo.
 - **`publish-to-kommo` reintenta** (3 veces) y **fusiona** `agent_metadata`,
   que antes se perdía al fallar. Dos casos son terminales de una: lead cerrado
   o borrado en Kommo (trampa 23).
@@ -68,12 +64,14 @@ Para apagarlo: `/agent` → "Agente activo" (para todo) o "Publicar en Kommo"
   cada tanda la juzga un segundo modelo contra SUS páginas —y se reprocesa sola,
   no el documento—, y al ensamblar se juzga la vertical (equivocada BLOQUEA; con
   reparos va a revisión). Extracción SOLO en `_shared/kb-extract.ts`: trampa 24.
-  El **archivo original se conserva** (`storage_path`, 0084) y se descarga desde
-  `/verticales`: sin él un documento mal extraído no se puede reprocesar, que es
-  lo que dejó a los dos flyers sin salida. Solo lo borra "Descartar" o borrar el
-  documento. Y **`kb_salud_documentos()`** replica `looksMangled` en SQL sobre
-  los chunks para que `/verticales` pinte **⚠ N ilegibles** en la fila: validar
-  en la puerta no sirve para lo que entró antes de que la puerta existiera.
+  El **archivo original se conserva** (`storage_path`, 0084) y con él hay botón
+  de **Reprocesar** (0085): reencola el mismo objeto y sustituye el documento
+  **solo cuando el nuevo ya entró**, así la vertical nunca se queda sin él y un
+  reproceso fallido no borra nada. El archivo solo se va al descartar o borrar,
+  y ni eso si otro job lo usa. Y **`kb_salud_documentos()`** replica
+  `looksMangled` en SQL sobre los chunks para que `/verticales` pinte **⚠ N
+  ilegibles** en la fila: validar en la puerta no sirve para lo que entró antes
+  de que existiera.
 - **Dreams**: en español, frecuencia configurable desde `/dreams` con cron
   dinámico, listados en **tabla** ordenable con buscador y paginación. El digest
   (`DREAMS_DIGEST`) es rolling: ver trampa 17. **Las reglas del operador viajan
@@ -695,6 +693,8 @@ Migraciones del pipeline en `db/`; las del agente y emisiones en
   indexada: 29 de 31 chunks llevaban dentro el marcador de página de la trampa
   38 —"PLANES SUMAS ASEGURADAS -- 19 of 60 --"—, limpiados y re-embebidos.
   Recuperación comprobada: 4/4 preguntas traen su chunk en 1ª posición. Y a
-  raíz de eso la **0084**: el original se guarda en vez de borrarse al indexar y
-  `/verticales` canta los documentos que quedaron mal. 28 e2e, con el ciclo
-  completo del original (subir, indexar, descargar byte a byte, borrar).
+  raíz de eso la **0084/0085**: el original se guarda en vez de borrarse al
+  indexar, `/verticales` canta los documentos que quedaron mal y hay botón de
+  **Reprocesar**. 29 e2e, con los dos ciclos completos contra el Supabase real
+  (subir, indexar, descargar byte a byte, reprocesar y borrar) y limpiándose
+  solos para no dejar rastro en producción.

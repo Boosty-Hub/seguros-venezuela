@@ -64,6 +64,7 @@ export function VerticalKbPanel({
   const [jobs, setJobs] = useState<Job[]>([]);
   // Revisión abierta: el texto extraído de un job que quedó con reparos.
   const [revision, setRevision] = useState<{ id: string; texto: string; issues: string[] } | null>(null);
+  const [reprocesando, setReprocesando] = useState<string | null>(null);
 
   const missingTitle = !title.trim();
   const missingSource = !file && !content.trim();
@@ -223,6 +224,24 @@ export function VerticalKbPanel({
       setError(err instanceof Error ? err.message : "no se pudo descartar");
     } finally {
       setBusy(false);
+    }
+  }
+
+  /**
+   * Reprocesa un documento desde su original (0085). No borra nada acá: el
+   * viejo sigue sirviendo al agente hasta que el nuevo está indexado, y es el
+   * ensamblador quien lo sustituye entonces.
+   */
+  async function reprocesar(id: string) {
+    setError(null);
+    setReprocesando(id);
+    try {
+      await pedir(`/api/kb/document/${id}/reprocesar`, { method: "POST" });
+      await cargarJobs();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "no se pudo reprocesar");
+    } finally {
+      setReprocesando(null);
     }
   }
 
@@ -441,6 +460,22 @@ export function VerticalKbPanel({
                       </a>
                     </td>
                     <td className="px-3 py-2 text-right">
+                      {/* Reprocesar solo tiene sentido si hay original: sin él
+                          no hay nada que volver a leer. */}
+                      {sd?.tiene_original && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => reprocesar(d.id)}
+                            disabled={busy || reprocesando !== null}
+                            title="Vuelve a leer el archivo original con la extracción de hoy y sustituye este documento cuando termine."
+                            className="font-medium text-neutral-700 hover:underline disabled:opacity-40"
+                          >
+                            {reprocesando === d.id ? "encolando…" : "Reprocesar"}
+                          </button>
+                          <span className="text-neutral-300"> · </span>
+                        </>
+                      )}
                       <button
                         type="button"
                         onClick={() => setConfirmId(d.id)}

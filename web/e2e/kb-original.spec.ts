@@ -80,7 +80,31 @@ test("el original sobrevive al indexado, se descarga y se borra con el documento
   await expect(modal.getByRole("row").filter({ hasText: TITULO })).toHaveCount(0, {
     timeout: 30_000,
   });
+  await limpiarJobs(page, modal);
 });
+
+/**
+ * Borra las filas de cola que dejó el test. El documento se limpia por la UI,
+ * pero el JOB queda como histórico y una fila por corrida acabaría siendo
+ * ruido en una tabla de producción.
+ *
+ * El id de la vertical sale del DOM (`kb-file-<uuid>`, el input de archivo del
+ * panel) porque `/api/verticales` no tiene GET.
+ */
+async function limpiarJobs(
+  page: import("@playwright/test").Page,
+  modal: import("@playwright/test").Locator
+): Promise<void> {
+  const inputId = await modal.locator('input[type="file"]').getAttribute("id");
+  const verticalId = (inputId ?? "").replace("kb-file-", "");
+  if (!verticalId) return;
+  const r = await page.request.get(`/api/kb/jobs?vertical_id=${verticalId}`);
+  if (!r.ok()) return;
+  const { jobs } = (await r.json()) as { jobs: Array<{ id: string; title: string }> };
+  for (const j of jobs.filter((x) => x.title === TITULO)) {
+    await page.request.delete(`/api/kb/jobs/${j.id}`);
+  }
+}
 
 /** Saca el id del documento del href del enlace de descarga de esa fila. */
 async function idDeFila(fila: import("@playwright/test").Locator): Promise<string> {
@@ -134,4 +158,74 @@ test("una vertical con documentos ilegibles lo avisa en la tabla y lo detalla de
     hasText: /^(ilegible|con ruido|sin contenido)$/,
   });
   expect(await marcados.count()).toBe(n);
+});
+
+test("reprocesar sustituye el documento sin perder el original ni dejar hueco", async ({
+  page,
+}) => {
+  // El reproceso es lo que hace útil el original guardado (0085). Lo que se
+  // comprueba es lo que puede salir mal en silencio:
+  //   * que el viejo se borre ANTES de tiempo y la vertical se quede sin él,
+  //   * que acaben DOS documentos (el viejo y el nuevo) sirviendo al agente,
+  //   * que el archivo se borre con el viejo y el nuevo quede sin original.
+  test.setTimeout(300_000);
+  await entrar(page);
+  await page.goto("/verticales");
+
+  const fila = page.getByRole("row").filter({ hasText: "mascotas" }).first();
+  await expect(fila).toBeVisible({ timeout: 60_000 });
+  await fila.getByText(/Ver \/ Editar/).click();
+  const modal = page.getByRole("dialog");
+  await expect(modal).toBeVisible();
+
+  const previo = modal.getByRole("row").filter({ hasText: TITULO });
+  if (await previo.count()) {
+    await previo.first().getByRole("button", { name: /^Borrar$/ }).click();
+    await page.getByRole("button", { name: /^Borrar$/ }).last().click();
+    await expect(modal.getByRole("row").filter({ hasText: TITULO })).toHaveCount(0, { timeout: 30_000 });
+  }
+
+  // Se sube una vez para tener algo que reprocesar.
+  await modal.getByPlaceholder(/Título/).fill(TITULO);
+  await modal.locator('input[type="file"]').setInputFiles(FIXTURE);
+  await modal.getByRole("button", { name: /Indexar en esta vertical/i }).click();
+  const doc = modal.getByRole("row").filter({ hasText: TITULO });
+  await expect(doc).toHaveCount(1, { timeout: 180_000 });
+  const idViejo = await idDeFila(doc);
+
+  // ---- Reprocesar ----
+  await doc.getByRole("button", { name: /^Reprocesar$/ }).click();
+
+  // Mientras dura, el documento viejo SIGUE ahí: la vertical no se queda sin
+  // él. Y no puede haber dos filas con el mismo título.
+  await expect(doc).toHaveCount(1);
+
+  // Al terminar hay UNA fila, con un id DISTINTO: se sustituyó, no se duplicó.
+  await expect
+    .poll(async () => idDeFila(modal.getByRole("row").filter({ hasText: TITULO })).catch(() => idViejo), {
+      timeout: 240_000,
+      intervals: [4000],
+    })
+    .not.toBe(idViejo);
+  await expect(modal.getByRole("row").filter({ hasText: TITULO })).toHaveCount(1);
+
+  // El nuevo conserva el original y se descarga igual que el anterior.
+  const nuevo = modal.getByRole("row").filter({ hasText: TITULO });
+  await expect(nuevo.getByRole("link", { name: /^original$/ })).toBeVisible();
+  const descarga = await Promise.all([
+    page.waitForEvent("download"),
+    nuevo.getByRole("link", { name: /^original$/ }).click(),
+  ]).then(([d]) => d);
+  const bajado = readFileSync((await descarga.path())!);
+  expect(bajado.equals(readFileSync(FIXTURE))).toBe(true);
+
+  // Y el viejo ya no existe.
+  const viejo = await page.request.get(`/api/kb/document/${idViejo}`);
+  expect(viejo.status()).toBe(404);
+
+  // Limpieza.
+  await nuevo.getByRole("button", { name: /^Borrar$/ }).click();
+  await page.getByRole("button", { name: /^Borrar$/ }).last().click();
+  await expect(modal.getByRole("row").filter({ hasText: TITULO })).toHaveCount(0, { timeout: 30_000 });
+  await limpiarJobs(page, modal);
 });

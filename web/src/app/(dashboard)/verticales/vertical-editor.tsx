@@ -49,7 +49,7 @@ const PROBLEMA: Record<string, { etiqueta: string; detalle: string; tono: string
   ilegible: {
     etiqueta: "ilegible",
     detalle:
-      "el texto indexado está roto (palabras pegadas o partidas): el agente le citaría esto a un cliente. Vuelve a subirlo — ahora se lee por imagen.",
+      "el texto indexado está roto (palabras pegadas o partidas): el agente le citaría esto a un cliente.",
     tono: "bg-red-50 text-red-700 ring-red-200",
   },
   vacio: {
@@ -89,13 +89,16 @@ export function AvisoSalud({ salud }: { salud: SaludDoc[] }) {
             <strong>{d.title}</strong> — {PROBLEMA[d.veredicto]?.detalle ?? d.veredicto}
             {d.veredicto === "ilegible" && (
               <span className="opacity-70"> (largo medio de palabra {d.largo_medio}; lo sano es ~5,5)</span>
-            )}
-            {!d.tiene_original && (
-              <span className="opacity-70">
-                {" "}
-                No hay archivo original guardado, así que hay que volver a subirlo a mano.
-              </span>
-            )}
+            )}{" "}
+            {/* La acción depende de si hay original: con él basta un clic en
+                Reprocesar; sin él hay que buscar el archivo y volver a
+                subirlo, que es el caso de los documentos anteriores a la
+                0084. */}
+            <strong>
+              {d.tiene_original
+                ? "Dale a Reprocesar en la tabla de abajo: lo relee con la extracción de hoy."
+                : "No hay archivo original guardado: hay que buscarlo y volver a subirlo."}
+            </strong>
           </li>
         ))}
       </ul>
