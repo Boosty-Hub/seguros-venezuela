@@ -1,6 +1,6 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { PageShell, EmptyState } from "@/components/ui";
-import { VerticalRow, NewVerticalForm, type UsoVertical } from "./vertical-editor";
+import { VerticalRow, NewVerticalForm, type UsoVertical, type SaludDoc } from "./vertical-editor";
 
 export const dynamic = "force-dynamic";
 
@@ -47,7 +47,8 @@ type KBDocument = {
 
 export default async function VerticalesPage() {
   const supabase = createSupabaseServerClient();
-  const [{ data: verticals }, { data: rawDocs }, { data: usoData }] = await Promise.all([
+  const [{ data: verticals }, { data: rawDocs }, { data: usoData }, { data: saludData }] =
+    await Promise.all([
     supabase
       .from("verticals")
       .select("id, slug, name, description, system_prompt, auto_reply, requires_review, ignore")
@@ -58,7 +59,18 @@ export default async function VerticalesPage() {
       .order("created_at", { ascending: false }),
     // Cuántos mensajes ha clasificado el agente en cada vertical (0078).
     supabase.rpc("verticales_uso", { p_dias_recientes: DIAS_RECIENTES }),
+    // Calidad de lo YA indexado (0084): es lo que hace visible un documento
+    // roto sin tener que abrir la vertical y leerlo.
+    supabase.rpc("kb_salud_documentos"),
   ]);
+
+  const saludPorVertical = new Map<string, SaludDoc[]>();
+  for (const d of (saludData ?? []) as SaludDoc[]) {
+    if (!d.vertical_id) continue;
+    const list = saludPorVertical.get(d.vertical_id) ?? [];
+    list.push(d);
+    saludPorVertical.set(d.vertical_id, list);
+  }
 
   const uso = (usoData ?? null) as Uso | null;
   const usoPorVertical = uso?.por_vertical ?? {};
@@ -121,6 +133,7 @@ export default async function VerticalesPage() {
                     key={v.id}
                     vertical={v}
                     docs={docsByVertical.get(v.id) ?? []}
+                    salud={saludPorVertical.get(v.id) ?? []}
                     uso={usoPorVertical[v.id]}
                     diasRecientes={uso?.dias_recientes ?? DIAS_RECIENTES}
                   />

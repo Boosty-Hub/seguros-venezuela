@@ -222,7 +222,6 @@ async function ensamblar(
         });
         if (ver.veredicto === "mal") {
           const sugerencia = ver.vertical_sugerida ? ` Parece pertenecer a "${ver.vertical_sugerida}".` : "";
-          await limpiarStorage(job);
           await supabase
             .from("kb_ingest_jobs")
             .update({
@@ -320,7 +319,25 @@ async function indexar(job: Job, texto: string) {
     throw new Error(chunksErr.message);
   }
 
-  await limpiarStorage(job);
+  // El original se CONSERVA (0084) y queda apuntado en el documento. Antes se
+  // borraba acá, y eso dejó dos flyers indexados con texto ilegible que no se
+  // pueden reprocesar porque el PDF ya no existe en ninguna parte. Con el
+  // archivo guardado, un documento mal extraído se vuelve a procesar solo.
+  if (job.storage_path) {
+    const { data: meta } = await supabase.storage
+      .from(BUCKET)
+      .list(job.storage_path.split("/").slice(0, -1).join("/"), {
+        search: job.storage_path.split("/").pop() ?? "",
+        limit: 1,
+      });
+    await supabase
+      .from("kb_documents")
+      .update({
+        storage_path: job.storage_path,
+        source_bytes: (meta?.[0]?.metadata as { size?: number } | undefined)?.size ?? null,
+      })
+      .eq("id", doc.id);
+  }
   await supabase
     .from("kb_ingest_jobs")
     .update({ status: "listo", texto, issues: [], document_id: doc.id, last_error: null })
@@ -330,10 +347,10 @@ async function indexar(job: Job, texto: string) {
   });
 }
 
-/** El original solo hace falta hasta que el documento entra. */
-async function limpiarStorage(job: Job) {
-  if (!job.storage_path) return;
-  try {
-    await supabase.storage.from(BUCKET).remove([job.storage_path]);
-  } catch { /* fail-open: dejar un temporal huérfano no puede tumbar la ingesta */ }
-}
+// NADA borra el original automáticamente (0084). Un job que falla lo conserva
+// para poder reintentarlo, y solo desaparece con una acción explícita del
+// operador: "Descartar" en la cola (DELETE /api/kb/jobs/[id]) o borrar el
+// documento indexado (DELETE /api/kb/document/[id]). El coste de un huérfano
+// en el bucket es unos MB; el de perder el original es tener un documento
+// ilegible dentro de una vertical y no poder hacer nada, que es justo lo que
+// pasó con "Flyer RCV" y "Flyer marcotas".

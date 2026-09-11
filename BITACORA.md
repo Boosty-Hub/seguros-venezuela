@@ -68,6 +68,12 @@ Para apagarlo: `/agent` → "Agente activo" (para todo) o "Publicar en Kommo"
   cada tanda la juzga un segundo modelo contra SUS páginas —y se reprocesa sola,
   no el documento—, y al ensamblar se juzga la vertical (equivocada BLOQUEA; con
   reparos va a revisión). Extracción SOLO en `_shared/kb-extract.ts`: trampa 24.
+  El **archivo original se conserva** (`storage_path`, 0084) y se descarga desde
+  `/verticales`: sin él un documento mal extraído no se puede reprocesar, que es
+  lo que dejó a los dos flyers sin salida. Solo lo borra "Descartar" o borrar el
+  documento. Y **`kb_salud_documentos()`** replica `looksMangled` en SQL sobre
+  los chunks para que `/verticales` pinte **⚠ N ilegibles** en la fila: validar
+  en la puerta no sirve para lo que entró antes de que la puerta existiera.
 - **Dreams**: en español, frecuencia configurable desde `/dreams` con cron
   dinámico, listados en **tabla** ordenable con buscador y paginación. El digest
   (`DREAMS_DIGEST`) es rolling: ver trampa 17. **Las reglas del operador viajan
@@ -77,7 +83,7 @@ Para apagarlo: `/agent` → "Agente activo" (para todo) o "Publicar en Kommo"
 ### Dashboard
 
 - **Torre de control**: la campana abre un panel que **desplaza** el contenido
-  con alertas, Dreams, agente, consumo y revisiones (es la única vista de alertas).
+  con alertas, Dreams, agente, consumo y revisiones.
 - **`/inbox`**: contador de mensajes por conversación (cliente + agente, con el
   desglose en el `title`). `messages` solo guarda entrantes; las respuestas del
   agente son `drafts` en `auto_sent` (un `failed` nunca llegó al cliente).
@@ -87,14 +93,13 @@ Para apagarlo: `/agent` → "Agente activo" (para todo) o "Publicar en Kommo"
   canal sale de `leads.channel` o del `source` del primer mensaje; los leads sin
   conversación **se excluyen** en vez de caer en un "Otro" que llegó al 79%.
 - **`/pipeline`, dos pestañas**: "B2C / B2B por corredor" (por defecto) y
-  "Embudo Zoho" (`?vista=embudo`). Lo B2B se lee por intermediario (tabla
-  ordenable y paginada) más la efectividad; **Analítica** abre el cajón (su
-  sección, más abajo). `moneda` y `ramo` están vacías al 100% en Zoho: no se
-  grafican. Fuente: `zoho_pipeline_overview()` y `zoho_corredor_detalle()`
-  sobre la materializada **`mv_zoho_clasificacion`** (0067), refrescada por
-  cron un minuto después del sync — sin ella cada carga recalculaba los regex
-  fila por fila. Datos al 06-09 (15.055 tickets no-spam): **B2C 2.649 · B2B
-  12.286 · sin atribución 120**, 1.163 corredores y ~11.000 clientes finales.
+  "Embudo Zoho" (`?vista=embudo`). Lo B2B se lee por intermediario más la
+  efectividad; **Analítica** abre el cajón (su sección, más abajo). `moneda` y
+  `ramo` están vacías al 100% en Zoho: no se grafican. Fuente:
+  `zoho_pipeline_overview()` y `zoho_corredor_detalle()` sobre la materializada
+  **`mv_zoho_clasificacion`** (0067), refrescada por cron un minuto después del
+  sync — sin ella cada carga recalculaba los regex fila por fila. Al 11-09:
+  **B2C 2.752 · B2B 12.604 · sin atribución 124**, 1.196 corredores.
 - **Filtro de periodo** (0081), en las dos pestañas y en la analítica: atajos
   (hoy / 7 / 30 días / este mes / mes pasado) más inicio y fin, en la URL
   (`?desde&hasta`, inclusivas) para sobrevivir a un F5 y pasarse por link. Las
@@ -118,17 +123,16 @@ asumiendo datos no dichos (corregido en v15) y la otra son errores HMAC **en la
 app del cliente**. Las 21 restantes se cerraron con su causa arreglada (trampas
 31-32 y 34); quedan **9 mensajes** en revisión, legítimos (PENDIENTE 11).
 
-**Sin webhook de salida** (`alert_config`): nunca se usó, la `0070` tiró la
-tabla. La Torre filtra por `acknowledged_at is null`, **no** por `status`, y las
-alertas **se auto-resuelven** cuando su causa desaparece.
+**Sin webhook de salida** (`alert_config`): la `0070` tiró la tabla. La Torre
+filtra por `acknowledged_at is null`, **no** por `status`, y las alertas **se
+auto-resuelven** cuando su causa desaparece.
 
 ### Webhook de Kommo → auto-sanado
 
 Kommo deshabilita el webhook cuando le falla sostenido (el 29/08: ~40h mudo).
 `alerts-scan` (cada 5 min) chequea el estado real contra la API y lo recrea solo
-si está `disabled` o no existe, sin esperar a un humano (el cómo, en la trampa
-20). Si falla reintenta cada 20 min — cooldown solo sobre la escritura. Avisa
-con `kommo_webhook_reconnected` / `..._failed`.
+si está `disabled` o no existe (el cómo, en la trampa 20). Si falla reintenta
+cada 20 min. Avisa con `kommo_webhook_reconnected` / `..._failed`.
 
 ### Bitácora propia (`system_logs`)
 
@@ -139,9 +143,8 @@ El Log Drain oficial cuesta $60/mes — descartado. En su lugar, tabla propia
 
 ### Transcripción de notas de voz (Whisper)
 
-Sana (estuvo rota al 100%: trampas 21-22). El recobro automático reintenta
-audio además de imagen/documento, y la transcripción se **persiste** en
-`messages.content` con prefijo 🎙️, así que también queda en el historial.
+Sana (estuvo rota al 100%: trampas 21-22). El recobro reintenta audio además de
+imagen/documento y la transcripción se **persiste** en `messages.content`.
 
 ### Pipeline Zoho → Kommo
 
@@ -170,24 +173,21 @@ aparte porque no hay corredor al que atribuirlos (PENDIENTE 6).
 
 En `/pipeline` → "B2C / B2B por corredor". Cruza las cotizaciones de Zoho con
 las pólizas emitidas, que llegan en un **CSV mensual del sistema central** que
-el operador sube desde el dashboard ("Cargar emisiones": preview primero,
-escritura al confirmar). 0071-0076; `emisiones.ts` y `/api/pipeline/*`.
+el operador sube con preview ("Cargar emisiones"; escritura al confirmar).
+0071-0076; `emisiones.ts` y `/api/pipeline/*`.
 
-- **Cliente por cédula**, tomador **o** asegurado (personas distintas en muchas
-  pólizas). `zoho_cedula()` la saca del asunto en el 99,8% de los B2B; con
-  agosto machean 225 de 539.
+- **Cliente por cédula**, tomador **o** asegurado (personas distintas en 229 de
+  539 pólizas — de ahí el PENDIENTE 15). `zoho_cedula()` la saca del asunto en
+  el 99,8% de los B2B; con agosto machean 225 de 539.
 - **Corredor por `corredor_alias`**, que liga el texto libre de Zoho al
   `Cod_Intermediario` canónico: las 12 escrituras de "BARECA" colapsan en una.
-  `zoho_mapear_corredores()` propone (258 de 1.163) exigiendo una palabra poco
-  común compartida (trampa 28) y respeta lo `manual`/`rechazado`; lo ambiguo se
-  cierra a mano en **Revisar corredores**.
+  `zoho_mapear_corredores()` propone (258 de 1.196) exigiendo una palabra poco
+  común compartida (trampa 28) y respeta lo `manual`/`rechazado`.
 - **La emisión se acredita al intermediario del sistema central**, no al asesor
-  del ticket: cuando difieren suele ser persona vs. empresa. **Anuladas no
-  cuentan** (agosto: 460 vigentes / 79 anuladas). Los **dos porcentajes** son un
-  **suelo declarado** (trampa 26): con agosto dan 4,8% y 4,1%; la fiable hoy es
-  la inversa, de lo emitido cuánto venía de una cotización (35,6%).
-- **25 tests e2e** cubren render, avisos, tabla, carga, alias, pestañas,
-  verticales y periodo. El fixture es **sintético**: el repo es público.
+  del ticket. **Anuladas no cuentan** (agosto: 460 vigentes / 79 anuladas). Los
+  **dos porcentajes** son un **suelo declarado** (trampa 26): 4,8% y 4,1%; la
+  fiable hoy es la inversa, de lo emitido cuánto venía de cotización (35,6%).
+- **28 tests e2e**; el fixture de carga es **sintético**: el repo es público.
 
 ### Panel de analítica de `/pipeline`
 
@@ -240,12 +240,12 @@ a 765-810ms con la materializada. Netlify da 403 tras ~66 cargas seguidas.
 ## PENDIENTE
 
 1. Cargar KB real en cada vertical; la mayoría sigue sin ninguno. Los
-   **condicionados escaneados** ya se pueden subir sin tope práctico de páginas
-   (cola de la 0080), pero estrénala con uno (PENDIENTE 14). Auditoría del
-   11-09 sobre los 5 documentos / 31 chunks que hay: sanos salvo **"Flyer RCV"
-   y "Flyer marcotas"**, que siguen ILEGIBLES (largo medio de palabra 12,7 y
-   8,8 contra 5,9 del resto — se cargaron antes del validador). Hay que volver
-   a subirlos: ahora `looksMangled` los manda a visión y entran bien.
+   **condicionados escaneados** ya entran sin tope práctico de páginas (0080),
+   pero estrénalo con uno (PENDIENTE 14). De los 5 documentos indexados, dos
+   siguen ILEGIBLES: **"Flyer RCV" y "Flyer marcotas"** (largo medio de palabra
+   13,1 y 9,1 contra 5,7 del resto). `/verticales` ya lo avisa, pero son
+   anteriores a la 0084 y **no tienen original**: los archivos los tiene que
+   buscar el operador y volver a subirlos.
 2. Borrar a mano en Kommo los leads etiquetados `duplicado` y los 15 de
    `prueba-carga` (ya en Perdido). La API no borra leads (trampa 2).
 3. Restringir la hoja de Google de Meta Ads (hoy `anyone: commenter`, expone
@@ -302,8 +302,7 @@ cualquier lead). Refresh token de Zoho sin caducidad conocida, pero revocable.
 ## Estado y comandos
 
 ```sql
--- OJO: la frescura del sync se mide con max(tickets.synced_at), NO con
--- sync_state, que solo lo escribe el script Node (trampa 25).
+-- Frescura del sync: max(tickets.synced_at), NO sync_state (trampa 25).
 select * from public.estado_general;      -- totales, cortes, fallos 24h
 select * from public.bitacora_reciente;   -- una fila por corrida del sync
 select * from public.system_logs order by created_at desc limit 50;
@@ -314,11 +313,10 @@ Otras: `sync_log`, `kommo_sync_status`, `meta_sync_status`, `kommo_duplicados`.
 ```bash
 cd sync                                          # requiere sync/.env
 node --env-file=.env sync.mjs incremental        # el ciclo completo
-node --env-file=.env sync.mjs kommo --dry-run    # ver payloads, no escribe
-#   ...igual con kommo-b2b y meta
+node --env-file=.env sync.mjs kommo --dry-run    # payloads (y kommo-b2b/meta)
 node --env-file=.env sync.mjs kommo-init 2026-08-01T00:00:00Z   # mover el corte
 node --env-file=.env limpiar-kommo.mjs --dry-run # etiquetar dups, arreglar tels
-cd ../web && npx playwright test                 # los 25 e2e
+cd ../web && npx playwright test                 # los 28 e2e
 ```
 
 Migraciones del pipeline en `db/`; las del agente y emisiones en
@@ -326,8 +324,7 @@ Migraciones del pipeline en `db/`; las del agente y emisiones en
 `SUPABASE_PROJECT_REF` en `.env.local`). Tras tocar una migración o función:
 `node web/scripts/embed-provision.mjs`. Edge Functions:
 `node scripts/deploy-agent-functions.mjs <slug>`. Managed Agent:
-`scripts/provision-agent.mjs` (idempotente; NO reconfigura uno existente — eso
-se hace desde `/agent`, que es lo que empuja el prompt).
+`scripts/provision-agent.mjs` (NO reconfigura uno existente: eso es `/agent`).
 
 ---
 
@@ -697,4 +694,7 @@ se hace desde `/agent`, que es lo que empuja el prompt).
   porque los tests viejos navegan por URL). Arregladas. Y auditada la KB ya
   indexada: 29 de 31 chunks llevaban dentro el marcador de página de la trampa
   38 —"PLANES SUMAS ASEGURADAS -- 19 of 60 --"—, limpiados y re-embebidos.
-  Recuperación comprobada: 4/4 preguntas traen su chunk en 1ª posición.
+  Recuperación comprobada: 4/4 preguntas traen su chunk en 1ª posición. Y a
+  raíz de eso la **0084**: el original se guarda en vez de borrarse al indexar y
+  `/verticales` canta los documentos que quedaron mal. 28 e2e, con el ciclo
+  completo del original (subir, indexar, descargar byte a byte, borrar).

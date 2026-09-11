@@ -25,6 +25,85 @@ type KBDocument = {
 };
 
 /**
+ * Salud de UN documento ya indexado, de `kb_salud_documentos()` (0084).
+ *
+ * Existe porque validar solo en la puerta de entrada no sirve para lo que
+ * entró ANTES de que la puerta existiera: "Flyer RCV" y "Flyer marcotas" están
+ * dentro con texto ilegible desde antes del validador y nada lo decía en
+ * pantalla. Ahora la vertical lo canta.
+ */
+export type SaludDoc = {
+  document_id: string;
+  vertical_id: string | null;
+  title: string;
+  chunks: number;
+  largo_medio: number;
+  pegadas_pct: number;
+  marcadores: number;
+  tiene_original: boolean;
+  extraido_por: string;
+  veredicto: "ok" | "ilegible" | "con_ruido" | "vacio";
+};
+
+const PROBLEMA: Record<string, { etiqueta: string; detalle: string; tono: string }> = {
+  ilegible: {
+    etiqueta: "ilegible",
+    detalle:
+      "el texto indexado está roto (palabras pegadas o partidas): el agente le citaría esto a un cliente. Vuelve a subirlo — ahora se lee por imagen.",
+    tono: "bg-red-50 text-red-700 ring-red-200",
+  },
+  vacio: {
+    etiqueta: "sin contenido",
+    detalle: "no tiene ningún fragmento indexado, así que el agente nunca lo va a encontrar.",
+    tono: "bg-red-50 text-red-700 ring-red-200",
+  },
+  con_ruido: {
+    etiqueta: "con ruido",
+    detalle:
+      "lleva marcadores de página del parser intercalados en el texto. Se puede reprocesar.",
+    tono: "bg-amber-50 text-amber-700 ring-amber-200",
+  },
+};
+
+export function AvisoSalud({ salud }: { salud: SaludDoc[] }) {
+  const malos = salud.filter((d) => d.veredicto !== "ok");
+  if (malos.length === 0) return null;
+  const graves = malos.filter((d) => d.veredicto === "ilegible" || d.veredicto === "vacio");
+  return (
+    <div
+      className={
+        "space-y-1.5 rounded-lg border px-3 py-2.5 text-xs " +
+        (graves.length > 0
+          ? "border-red-200 bg-red-50 text-red-900"
+          : "border-amber-200 bg-amber-50 text-amber-900")
+      }
+    >
+      <p className="font-semibold">
+        {malos.length === 1
+          ? "1 documento de esta vertical quedó mal indexado"
+          : `${malos.length} documentos de esta vertical quedaron mal indexados`}
+      </p>
+      <ul className="list-inside list-disc space-y-0.5">
+        {malos.map((d) => (
+          <li key={d.document_id}>
+            <strong>{d.title}</strong> — {PROBLEMA[d.veredicto]?.detalle ?? d.veredicto}
+            {d.veredicto === "ilegible" && (
+              <span className="opacity-70"> (largo medio de palabra {d.largo_medio}; lo sano es ~5,5)</span>
+            )}
+            {!d.tiene_original && (
+              <span className="opacity-70">
+                {" "}
+                No hay archivo original guardado, así que hay que volver a subirlo a mano.
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/**
  * Cuántos mensajes ha metido el clasificador en esta vertical.
  * Sale de `verticales_uso()` (migración 0078) y llega `undefined` para una
  * vertical que nunca clasificó nada — que NO es lo mismo que cero mensajes con
@@ -42,16 +121,20 @@ const nfUso = new Intl.NumberFormat("es-VE");
 export function VerticalRow({
   vertical,
   docs,
+  salud = [],
   uso,
   diasRecientes = 7,
 }: {
   vertical: Vertical;
   docs: KBDocument[];
+  salud?: SaludDoc[];
   uso?: UsoVertical;
   diasRecientes?: number;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
+  const malos = salud.filter((d) => d.veredicto !== "ok");
+  const graves = malos.filter((d) => d.veredicto === "ilegible" || d.veredicto === "vacio").length;
 
   async function toggle(field: "auto_reply" | "requires_review" | "ignore") {
     await fetch(`/api/verticales/${vertical.id}`, {
@@ -181,13 +264,32 @@ export function VerticalRow({
           )}
         </td>
         <td className="px-4 py-3">
-          <span
-            className={
-              "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium " +
-              (docs.length > 0 ? "bg-sky-50 text-sky-700" : "bg-neutral-50 text-neutral-400")
-            }
-          >
-            {docs.length} {docs.length === 1 ? "doc" : "docs"}
+          <span className="inline-flex flex-wrap items-center gap-1">
+            <span
+              className={
+                "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium " +
+                (docs.length > 0 ? "bg-sky-50 text-sky-700" : "bg-neutral-50 text-neutral-400")
+              }
+            >
+              {docs.length} {docs.length === 1 ? "doc" : "docs"}
+            </span>
+            {/* La alerta va en la TABLA, no solo dentro del modal: si hay que
+                abrir cada vertical para enterarse de que un documento está
+                roto, nadie se entera (es lo que pasó con los dos flyers). */}
+            {malos.length > 0 && (
+              <span
+                title={malos.map((d) => `${d.title}: ${PROBLEMA[d.veredicto]?.etiqueta ?? d.veredicto}`).join(" · ")}
+                className={
+                  "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 " +
+                  (graves > 0
+                    ? "bg-red-50 text-red-700 ring-red-200"
+                    : "bg-amber-50 text-amber-700 ring-amber-200")
+                }
+              >
+                ⚠ {malos.length} {graves > 0 ? "ilegible" : "con ruido"}
+                {malos.length > 1 ? "s" : ""}
+              </span>
+            )}
           </span>
         </td>
         <td className="px-4 py-3 text-right">
@@ -204,6 +306,7 @@ export function VerticalRow({
           <VerticalForm
             vertical={vertical}
             docs={docs}
+            salud={salud}
             onDone={() => {
               setOpen(false);
               router.refresh();
@@ -315,10 +418,12 @@ function VerticalAiAssist({
 function VerticalForm({
   vertical,
   docs,
+  salud = [],
   onDone,
 }: {
   vertical: Vertical;
   docs: KBDocument[];
+  salud?: SaludDoc[];
   onDone: () => void;
 }) {
   const [name, setName] = useState(vertical.name);
@@ -413,7 +518,8 @@ function VerticalForm({
         <h3 className="text-sm font-semibold text-neutral-900">
           Base de conocimiento de &quot;{vertical.name}&quot;
         </h3>
-        <VerticalKbPanel verticalId={vertical.id} docs={docs} />
+        <AvisoSalud salud={salud} />
+        <VerticalKbPanel verticalId={vertical.id} docs={docs} salud={salud} />
       </div>
 
       <ConfirmDialog

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ConfirmDialog } from "@/components/ui";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import type { SaludDoc } from "./vertical-editor";
 
 const MAX_FILE_BYTES = 30 * 1024 * 1024; // igual a MAX_BYTES_ARCHIVO del worker
 
@@ -41,7 +42,16 @@ const EN_VUELO: Job["status"][] = ["pendiente", "transcribiendo", "ensamblando",
 // embeber ocurre en las Edge Functions kb-transcribe / kb-assemble, que tienen
 // ~400s de wall clock — un condicionado escaneado de 40 páginas no cabe ni de
 // lejos en los 26s de una función síncrona de Netlify (0080).
-export function VerticalKbPanel({ verticalId, docs }: { verticalId: string; docs: KBDocument[] }) {
+export function VerticalKbPanel({
+  verticalId,
+  docs,
+  salud = [],
+}: {
+  verticalId: string;
+  docs: KBDocument[];
+  salud?: SaludDoc[];
+}) {
+  const saludPorDoc = new Map(salud.map((d) => [d.document_id, d]));
   const router = useRouter();
   const [title, setTitle] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -377,25 +387,71 @@ export function VerticalKbPanel({ verticalId, docs }: { verticalId: string; docs
               <tr>
                 <th className="px-3 py-2 font-medium text-neutral-500">Título</th>
                 <th className="px-3 py-2 font-medium text-neutral-500">Chunks</th>
+                <th className="px-3 py-2 font-medium text-neutral-500">Estado</th>
+                <th className="px-3 py-2 font-medium text-neutral-500">Descargar</th>
                 <th className="px-3 py-2 font-medium text-neutral-500"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-100">
-              {docs.map((d) => (
-                <tr key={d.id}>
-                  <td className="px-3 py-2 text-neutral-900">{d.title}</td>
-                  <td className="px-3 py-2 text-neutral-600">{d.totalChunks}</td>
-                  <td className="px-3 py-2 text-right">
-                    <button
-                      type="button"
-                      onClick={() => setConfirmId(d.id)}
-                      className="font-medium text-red-600 hover:underline"
-                    >
-                      Borrar
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {docs.map((d) => {
+                const sd = saludPorDoc.get(d.id);
+                return (
+                  <tr key={d.id}>
+                    <td className="px-3 py-2 text-neutral-900">{d.title}</td>
+                    <td className="px-3 py-2 text-neutral-600">{d.totalChunks}</td>
+                    <td className="px-3 py-2">
+                      {!sd || sd.veredicto === "ok" ? (
+                        <span className="text-neutral-400">—</span>
+                      ) : (
+                        <span
+                          title={`largo medio de palabra ${sd.largo_medio} · ${sd.pegadas_pct}% pegadas · ${sd.marcadores} chunks con marcador`}
+                          className={
+                            "rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 " +
+                            (sd.veredicto === "con_ruido"
+                              ? "bg-amber-50 text-amber-700 ring-amber-200"
+                              : "bg-red-50 text-red-700 ring-red-200")
+                          }
+                        >
+                          {sd.veredicto === "con_ruido" ? "con ruido" : sd.veredicto === "vacio" ? "sin contenido" : "ilegible"}
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2">
+                      {/* El original es lo que permite reprocesar sin volver a
+                          pedirle el archivo al operador (0084). Los documentos
+                          anteriores a esa migración no lo tienen. */}
+                      {sd?.tiene_original ? (
+                        <a
+                          href={`/api/kb/document/${d.id}?original=1`}
+                          className="font-medium text-neutral-700 hover:underline"
+                        >
+                          original
+                        </a>
+                      ) : (
+                        <span className="text-neutral-400" title="Se indexó antes de que se guardaran los originales, o su contenido se pegó a mano.">
+                          sin original
+                        </span>
+                      )}
+                      <span className="text-neutral-300"> · </span>
+                      <a
+                        href={`/api/kb/document/${d.id}`}
+                        className="text-neutral-500 hover:underline"
+                      >
+                        texto
+                      </a>
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      <button
+                        type="button"
+                        onClick={() => setConfirmId(d.id)}
+                        className="font-medium text-red-600 hover:underline"
+                      >
+                        Borrar
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -406,7 +462,7 @@ export function VerticalKbPanel({ verticalId, docs }: { verticalId: string; docs
       <ConfirmDialog
         open={confirmId !== null}
         title="Borrar documento"
-        description="Se eliminará junto con sus chunks indexados. Esta acción no se puede deshacer."
+        description="Se eliminará junto con sus chunks indexados y el archivo original. Esta acción no se puede deshacer."
         confirmLabel="Borrar"
         tone="danger"
         busy={deletingId !== null}
