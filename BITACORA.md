@@ -240,10 +240,9 @@ a 765-810ms con la materializada. Netlify da 403 tras ~66 cargas seguidas.
 1. Cargar KB real en cada vertical; la mayoría sigue sin ninguno. Los
    **condicionados escaneados** ya entran sin tope práctico de páginas (0080),
    pero estrénalo con uno (PENDIENTE 14). De los 5 documentos indexados, dos
-   siguen ILEGIBLES: **"Flyer RCV" y "Flyer marcotas"** (largo medio de palabra
-   13,1 y 9,1 contra 5,7 del resto). `/verticales` ya lo avisa, pero son
-   anteriores a la 0084 y **no tienen original**: los archivos los tiene que
-   buscar el operador y volver a subirlos.
+   siguen ILEGIBLES: **"Flyer RCV" y "Flyer marcotas"** (palabra media 13,1 y
+   9,1 contra 5,7). `/verticales` lo avisa, pero son anteriores a la 0084 y **no
+   tienen original**: hay que buscar los archivos y volver a subirlos.
 2. Borrar a mano en Kommo los leads etiquetados `duplicado` y los 15 de
    `prueba-carga` (ya en Perdido). La API no borra leads (trampa 2).
 3. Restringir la hoja de Google de Meta Ads (hoy `anyone: commenter`, expone
@@ -251,11 +250,10 @@ a 765-810ms con la materializada. Netlify da 403 tras ~66 cargas seguidas.
    servicio y apuntar `META_SHEET_CSV_URL`.
 4. Decidir qué hacer con los leads `revisar-asesor`, y definir topes reales en
    `/consumo` (hoy sin tope).
-6. Limpiar en Zoho: los 120 tickets con `Asesor` vacío (ya migran a B2C pero
-   siguen sin corredor atribuible), las 166 cotizaciones con `Asesor` = "si
-   tengo" y otros valores que no son un corredor (entran a B2B y ensucian el
-   conteo). La tabla "B2B por corredor" sigue listando los nombres crudos,
-   aunque la efectividad ya los colapsa con `corredor_alias`.
+6. Limpiar en Zoho: los 124 tickets con `Asesor` vacío (migran a B2C pero sin
+   corredor atribuible) y las 166 cotizaciones con `Asesor` = "si tengo" y
+   parecidos, que entran a B2B y ensucian el conteo. "B2B por corredor" lista
+   los nombres crudos; la efectividad ya los colapsa con `corredor_alias`.
 7. Que `zoho-sync` escriba `sync_state` en cada corrida (trampa 25): hoy solo
    lo hace el script Node y la tabla aparenta un sync caído con pipeline sano.
 8. Revisar los **905 corredores sin ligar** en "Revisar corredores" (9 ambiguos
@@ -266,31 +264,24 @@ a 765-810ms con la materializada. Netlify da 403 tras ~66 cargas seguidas.
    de la 0077). Con un solo mes, los dos porcentajes son un suelo (trampa 26).
 10. **Borrar el usuario de prueba** `prueba.e2e@segurosvenezuela.com` (editor)
    cuando no se necesite. Credenciales en `web/.env.local`, no versionado.
-11. Decidir qué hacer con los **9 mensajes que siguen en revisión**: son del
-   17-19 de agosto (apagón de saldo, trampa 30), nunca recibieron respuesta y
-   ya pasaron tres semanas. Incluyen dos cancelaciones de póliza y un "no me
-   iré con ustedes entonces".
+11. Decidir qué hacer con los **9 mensajes que siguen en revisión**: del 17-19
+   de agosto (apagón de saldo, trampa 30), nunca respondidos. Incluyen dos
+   cancelaciones de póliza y un "no me iré con ustedes entonces".
 13. **Que un mensaje rechazado por la reja levante alerta en la Torre**
-   (trampa 35). Hoy queda en `agent_metadata.correcciones_mensaje`, en el
-   `publish_error` del draft y en el log, pero **nada avisa**: los 6 acuses
-   internos se enviaron y nadie se enteró hasta que el operador los vio en
-   pantalla. Un rechazo `fuga` es justo la señal que sí hay que mirar (es raro:
-   6 en 259 drafts), y el `silencio` no debería alertar para no repetir la
-   trampa 34. Falta decidir si va como alerta de `alerts-scan` o como contador
-   en `/inbox`.
-14. **Estrenar la cola de KB con un condicionado real.** Migración aplicada y
-   workers desplegados con sus crones activos (11-09), pero todavía no ha
-   pasado un documento de verdad. Subir uno mirando `system_logs` y `/consumo`:
-   ahí se mide lo único que hoy es estimación —cuánto tarda y cuesta una
-   tanda—; la perilla es `KB_PAGINAS_POR_TANDA`.
-
+   (trampa 35). Queda en `correcciones_mensaje`, en el `publish_error` y en el
+   log, pero **nada avisa**. Un rechazo `fuga` es la señal que sí hay que mirar
+   (6 en 259 drafts); el `silencio` no debe alertar, para no repetir la trampa
+   34. Falta decidir si va en `alerts-scan` o como contador en `/inbox`.
+14. **Estrenar la cola con un ESCANEO real.** Desplegada y ya pasa documentos
+   (el e2e sube uno por corrida), pero todos con capa de texto: van por parseo
+   y **el camino de visión nunca ha corrido en producción**. Subir un
+   condicionado escaneado mirando `system_logs` y `/consumo` — ahí se mide lo
+   único que hoy es estimación: cuánto tarda y cuesta una tanda.
 15. **Decidir qué es un "cliente" en emisiones.** La tarjeta de la analítica
-   cuenta titulares —`coalesce(tomador, asegurado)`, 420 en agosto— y el cruce
-   de efectividad cuenta a cualquiera que aparezca como tomador **o** asegurado
-   (631), porque en 229 de las 539 pólizas son personas distintas. Las dos
-   definiciones son defendibles y cada una sirve a lo suyo, pero se llaman
-   igual en la misma pantalla. Falta que el operador diga cuál va en la tarjeta,
-   o renombrar una de las dos.
+   cuenta titulares (`coalesce(tomador, asegurado)`: 420 en agosto) y el cruce
+   de efectividad cuenta a quien aparezca como tomador **o** asegurado (631),
+   porque en 229 de 539 pólizas son personas distintas. Las dos valen para lo
+   suyo pero se llaman igual: falta elegir cuál va en la tarjeta.
 
 **Vencimientos:** token de Kommo **2027-10-30** (ese día deja de crearse
 cualquier lead). Refresh token de Zoho sin caducidad conocida, pero revocable.
@@ -642,6 +633,22 @@ Migraciones del pipeline en `db/`; las del agente y emisiones en
     Lección: si el extractor agrega texto propio, el umbral que mide "¿vino
     algo?" está midiendo también lo que agregó el extractor.
 
+39. **Tocar un archivo de `_shared` deja las 13 Edge Functions con drift, no
+    solo la que lo usa.** El bundle que sube `deploy-agent-functions.mjs` es
+    `<slug>/index.ts` **más TODO `_shared/`**, así que mover `esFalloDeCuenta` a
+    `provider-errors.ts` desactualizó todos los bundles — y desplegar solo las
+    dos de KB dejó a `process-inbound` con su copia local vieja, la que el repo
+    ya había borrado. Equivalente en conducta (por eso no se notaba), pero es
+    drift entre repo y producción: lo que la auditoría del 07-09 daba por bueno.
+    Y **el centro de updates no lo ve**: compara contra
+    `runtime_config.DEPLOYED_FUNCTION_HASHES`, que solo escribe él — el script
+    no lo toca, así que para él nada cambió nunca. Desplegando con el script,
+    "qué cambió" sale de `git diff --name-only <release>..HEAD --
+    supabase/functions/`; si ahí hay algo de `_shared`, se redespliega TODO.
+    Lección: un bundle que arrastra dependencias compartidas convierte
+    "desplegar lo que cambió" en "desplegar todo", y un detector que solo se
+    alimenta de sí mismo no detecta nada.
+
 ---
 
 ## Cronología
@@ -676,25 +683,18 @@ Migraciones del pipeline en `db/`; las del agente y emisiones en
   Netlify. La ingesta pasó a ser una **cola** (0080) y la extracción se mudó
   ENTERA a `_shared/kb-extract.ts`; de Netlify se borraron los tres `kb-*.ts`,
   las rutas `prepare`/`verify`/`ingest` y `pdf-parse`/`mammoth`.
-  `esFalloDeCuenta` subió a `_shared` (con tests) para que la cola no repita la
-  trampa 30. Juez a **Sonnet 5**: 1M de contexto por $2/$10 en vez de $3/$15.
-  Después, **filtro de periodo en `/pipeline`** (0081): `p_hasta` en las cinco
-  funciones —generadas por transformación del original y revisadas por diff— y
-  `zoho_embudo_resumen()` para la pestaña que tiraba de vistas sin parámetros.
-  De paso destapó una fuga: las funciones `security definer` eran ejecutables
-  por `anon` (trampa 33, segunda mitad).
-- **11-09**: cerrada esa fuga (0082) tras medirla en vivo, chips de mes en
-  emisiones (0083) y **todo desplegado**: cuatro migraciones, los dos workers
-  de KB con sus crones activos y 25 e2e en verde. Los e2e destaparon dos cosas
-  que el typecheck no ve: el filtro en `actions` aplastaba el título a una
-  palabra por línea, y el widget fijo de soporte tapaba la pestaña "Embudo
-  Zoho" lo bastante como para no poder **clicarla** (nadie lo había visto
-  porque los tests viejos navegan por URL). Arregladas. Y auditada la KB ya
-  indexada: 29 de 31 chunks llevaban dentro el marcador de página de la trampa
-  38 —"PLANES SUMAS ASEGURADAS -- 19 of 60 --"—, limpiados y re-embebidos.
-  Recuperación comprobada: 4/4 preguntas traen su chunk en 1ª posición. Y a
-  raíz de eso la **0084/0085**: el original se guarda en vez de borrarse al
-  indexar, `/verticales` canta los documentos que quedaron mal y hay botón de
-  **Reprocesar**. 29 e2e, con los dos ciclos completos contra el Supabase real
-  (subir, indexar, descargar byte a byte, reprocesar y borrar) y limpiándose
-  solos para no dejar rastro en producción.
+  `esFalloDeCuenta` subió a `_shared` (con tests). Juez a **Sonnet 5**: 1M de
+  contexto por $2/$10. Después el **filtro de periodo** (0081): `p_hasta` en
+  las cinco funciones y `zoho_embudo_resumen()` para la pestaña que tiraba de
+  vistas sin parámetros. De paso destapó la segunda mitad de la trampa 33.
+- **11-09**: cerrada esa fuga (0082) tras medirla en vivo y chips de mes en
+  emisiones (0083). Los e2e destaparon dos cosas que el typecheck no ve: el
+  filtro en `actions` aplastaba el título a una palabra por línea, y el widget
+  fijo de soporte tapaba la pestaña "Embudo Zoho" lo bastante como para no
+  poder **clicarla** (los tests viejos navegan por URL, así que nadie lo había
+  visto). Auditada la KB ya indexada: 29 de 31 chunks llevaban dentro el
+  marcador de la trampa 38, limpiados y re-embebidos — 4/4 preguntas traen su
+  chunk en 1ª posición. De ahí la **0084/0085**: el original se guarda en vez
+  de borrarse, `/verticales` canta los documentos malos y hay **Reprocesar**.
+  Cierre: **redesplegadas las 12 funciones**, no solo las de KB (trampa 39); 90
+  invocaciones de cron después, todas 200/202 y 0 errores. 29 e2e en verde.
