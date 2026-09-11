@@ -33,6 +33,7 @@ test("el original sobrevive al indexado, se descarga y se borra con el documento
   await fila.getByText(/Ver \/ Editar/).click();
   const modal = page.getByRole("dialog");
   await expect(modal).toBeVisible();
+  const verticalId = await idDeVertical(modal);
 
   // Si quedó un documento de una corrida anterior, se borra primero.
   const previo = modal.getByRole("row").filter({ hasText: TITULO });
@@ -80,23 +81,30 @@ test("el original sobrevive al indexado, se descarga y se borra con el documento
   await expect(modal.getByRole("row").filter({ hasText: TITULO })).toHaveCount(0, {
     timeout: 30_000,
   });
-  await limpiarJobs(page, modal);
+  await limpiarJobs(page, verticalId);
 });
+
+/**
+ * Id de la vertical, leído del DOM (`kb-file-<uuid>`, el input de archivo del
+ * panel) porque `/api/verticales` no tiene GET. Se captura UNA vez con el
+ * modal recién abierto: al final del test el diálogo que está en pantalla
+ * puede ser el de confirmar borrado, que no tiene ese input — así se colgaba
+ * contra producción.
+ */
+async function idDeVertical(modal: import("@playwright/test").Locator): Promise<string> {
+  const inputId = await modal.locator('input[type="file"]').getAttribute("id");
+  return (inputId ?? "").replace("kb-file-", "");
+}
 
 /**
  * Borra las filas de cola que dejó el test. El documento se limpia por la UI,
  * pero el JOB queda como histórico y una fila por corrida acabaría siendo
  * ruido en una tabla de producción.
- *
- * El id de la vertical sale del DOM (`kb-file-<uuid>`, el input de archivo del
- * panel) porque `/api/verticales` no tiene GET.
  */
 async function limpiarJobs(
   page: import("@playwright/test").Page,
-  modal: import("@playwright/test").Locator
+  verticalId: string
 ): Promise<void> {
-  const inputId = await modal.locator('input[type="file"]').getAttribute("id");
-  const verticalId = (inputId ?? "").replace("kb-file-", "");
   if (!verticalId) return;
   const r = await page.request.get(`/api/kb/jobs?vertical_id=${verticalId}`);
   if (!r.ok()) return;
@@ -177,6 +185,7 @@ test("reprocesar sustituye el documento sin perder el original ni dejar hueco", 
   await fila.getByText(/Ver \/ Editar/).click();
   const modal = page.getByRole("dialog");
   await expect(modal).toBeVisible();
+  const verticalId = await idDeVertical(modal);
 
   const previo = modal.getByRole("row").filter({ hasText: TITULO });
   if (await previo.count()) {
@@ -227,5 +236,5 @@ test("reprocesar sustituye el documento sin perder el original ni dejar hueco", 
   await nuevo.getByRole("button", { name: /^Borrar$/ }).click();
   await page.getByRole("button", { name: /^Borrar$/ }).last().click();
   await expect(modal.getByRole("row").filter({ hasText: TITULO })).toHaveCount(0, { timeout: 30_000 });
-  await limpiarJobs(page, modal);
+  await limpiarJobs(page, verticalId);
 });
