@@ -14,13 +14,14 @@ export async function POST(request: Request) {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  const body = (await request.json().catch(() => ({}))) as { asesor?: string; since?: string | null };
+  const body = (await request.json().catch(() => ({}))) as { asesor?: string; since?: string | null; hasta?: string | null };
   const asesor = body.asesor?.trim();
   if (!asesor) return NextResponse.json({ error: "asesor requerido" }, { status: 400 });
 
   const { data, error } = await supabase.rpc("zoho_corredor_detalle", {
     p_asesor: asesor,
     p_since: body.since ?? null,
+    p_hasta: body.hasta ?? null,
   });
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ ok: true, detalle: data });

@@ -1,11 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ConfirmDialog } from "@/components/ui";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
-const MAX_FILE_BYTES = 50 * 1024 * 1024; // 50MB — igual al límite del bucket kb-uploads
+const MAX_FILE_BYTES = 30 * 1024 * 1024; // igual a MAX_BYTES_ARCHIVO del worker
 
 type KBDocument = {
   id: string;
@@ -15,11 +15,32 @@ type KBDocument = {
   createdAt: string;
 };
 
+// Fila de kb_ingest_avance (0080).
+type Job = {
+  id: string;
+  title: string;
+  filename: string;
+  status: "pendiente" | "transcribiendo" | "ensamblando" | "revision" | "aprobado" | "listo" | "fallido";
+  total_pages: number | null;
+  document_id: string | null;
+  issues: string[] | null;
+  last_error: string | null;
+  tandas_total: number;
+  tandas_listas: number;
+  tandas_fallidas: number;
+};
+
+const EN_VUELO: Job["status"][] = ["pendiente", "transcribiendo", "ensamblando", "aprobado"];
+
 // Sube y lista los documentos de KB (RAG) de UNA vertical puntual. No hay
-// selector de vertical acá a propósito: todo documento subido desde este
-// panel queda atado a `verticalId` — ya no existe el concepto de "documento
-// general" (el agente siempre responde dentro de una vertical, así que un
-// documento sin vertical no tenía a quién servirle).
+// selector de vertical acá a propósito: todo documento subido desde este panel
+// queda atado a `verticalId`.
+//
+// El trabajo pesado NO corre en Netlify: el navegador sube el archivo al
+// bucket, encola el job y consulta el avance. Extraer, transcribir, juzgar y
+// embeber ocurre en las Edge Functions kb-transcribe / kb-assemble, que tienen
+// ~400s de wall clock — un condicionado escaneado de 40 páginas no cabe ni de
+// lejos en los 26s de una función síncrona de Netlify (0080).
 export function VerticalKbPanel({ verticalId, docs }: { verticalId: string; docs: KBDocument[] }) {
   const router = useRouter();
   const [title, setTitle] = useState("");
@@ -30,35 +51,73 @@ export function VerticalKbPanel({ verticalId, docs }: { verticalId: string; docs
   const [dragging, setDragging] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
-  // Revisión pendiente: el validador encontró observaciones y devolvió el
-  // texto para que un humano lo apruebe (o lo corrija) antes de indexarlo.
-  const [revision, setRevision] = useState<
-    { text: string; issues: string[]; format: string; filename: string; viaVision: boolean } | null
-  >(null);
-  // Qué está pasando ahora mismo: la ingesta va en varios pasos y algunos
-  // tardan ~20s, así que el usuario necesita ver que avanza.
-  const [etapa, setEtapa] = useState<string | null>(null);
+  const [jobs, setJobs] = useState<Job[]>([]);
+  // Revisión abierta: el texto extraído de un job que quedó con reparos.
+  const [revision, setRevision] = useState<{ id: string; texto: string; issues: string[] } | null>(null);
 
   const missingTitle = !title.trim();
   const missingSource = !file && !content.trim();
+
+  // ---- Avance de la cola ----
+  // Dos efectos, y tienen que ser dos: uno CARGA y otro decide si vuelve a
+  // haber carga. Encadenar los setTimeout dentro de un solo efecto de montaje
+  // no sirve, porque la cadena se corta en cuanto no queda nada en vuelo — que
+  // es el estado normal al abrir la vertical — y ya no la revive nadie: al
+  // subir un archivo la barra se quedaba clavada en "en cola…" hasta recargar
+  // la página. Con el contador, encolar cambia `jobs`, el planificador lo ve y
+  // la vuelve a arrancar.
+  //
+  // Y se DETIENE cuando no hay nada en vuelo: un intervalo corriendo con la
+  // pestaña abierta y la cola vacía es ruido contra la base cada 5s para nada.
+  const [pulso, setPulso] = useState(0);
+
+  const cargarJobs = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/kb/jobs?vertical_id=${verticalId}`);
+      if (!res.ok) return;
+      const { jobs: filas } = (await res.json()) as { jobs: Job[] };
+      setJobs(filas ?? []);
+    } catch {
+      /* un fallo de red no rompe la vista: el siguiente pulso reintenta */
+    }
+  }, [verticalId]);
+
+  useEffect(() => {
+    void cargarJobs();
+  }, [cargarJobs, pulso]);
+
+  const hayEnVuelo = jobs.some((j) => EN_VUELO.includes(j.status));
+  useEffect(() => {
+    if (!hayEnVuelo) return;
+    const t = setTimeout(() => setPulso((n) => n + 1), 5000);
+    return () => clearTimeout(t);
+  }, [hayEnVuelo, jobs]);
+
+  // Un job que acaba de indexar tiene que aparecer en la tabla de abajo, que
+  // la pinta el servidor. El ref evita refrescar en bucle: `jobs` cambia en
+  // cada pulso y un job 'listo' sigue estando en la lista.
+  const indexadosVistos = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const nuevos = jobs.filter(
+      (j) => j.status === "listo" && j.document_id && !indexadosVistos.current.has(j.id)
+    );
+    if (nuevos.length === 0) return;
+    for (const j of nuevos) indexadosVistos.current.add(j.id);
+    router.refresh();
+  }, [jobs, router]);
 
   function limpiarFormulario() {
     setTitle("");
     setContent("");
     setFile(null);
-    setRevision(null);
     const f = document.getElementById(`kb-file-${verticalId}`) as HTMLInputElement | null;
     if (f) f.value = "";
   }
 
-  // POST a un paso de la ingesta. Una respuesta no-JSON (timeout de la
-  // plataforma, 5xx sin cuerpo) no debe dejar el botón colgado ni fallar en
-  // silencio: se convierte en un error explícito.
-  async function paso(url: string, payload: unknown) {
+  async function pedir(url: string, init: RequestInit) {
     const res = await fetch(url, {
-      method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      ...init,
     });
     const json = await res.json().catch(() => ({ error: `respuesta inválida del servidor (${res.status})` }));
     if (!res.ok) throw new Error(json.error ?? "error");
@@ -71,127 +130,89 @@ export function VerticalKbPanel({ verticalId, docs }: { verticalId: string; docs
     if (missingSource) return setError("Falta el archivo o el contenido — sube un archivo o pega texto antes de indexar.");
     if (file && file.size > MAX_FILE_BYTES) {
       return setError(
-        `el archivo pesa ${(file.size / (1024 * 1024)).toFixed(1)}MB — el máximo soportado es 50MB.`
+        `el archivo pesa ${(file.size / (1024 * 1024)).toFixed(1)}MB y el máximo es ${MAX_FILE_BYTES / (1024 * 1024)}MB — divídelo y súbelo por partes.`
       );
     }
 
     setBusy(true);
     try {
-      // --- Texto pegado a mano: un solo paso, no hay nada que extraer ---
-      if (!file) {
-        setEtapa("Validando…");
-        const j = await paso("/api/kb/ingest", { title, vertical_id: verticalId, content });
-        finalizar(j);
-        return;
+      let storagePath: string | undefined;
+      if (file) {
+        // Directo del navegador al bucket: así el archivo no pasa por el
+        // límite de payload (~6MB) de una función serverless.
+        const supabase = createSupabaseBrowserClient();
+        // Supabase Storage rechaza keys con tildes/espacios/paréntesis
+        // ("Invalid key" 400, confirmado en vivo con un nombre real). Se sanea
+        // SOLO la key; el nombre original viaja aparte en `filename`.
+        const safeName = file.name
+          .normalize("NFD")
+          .replace(/[̀-ͯ]/g, "")
+          .replace(/[^a-zA-Z0-9.\-_]/g, "_");
+        storagePath = `${verticalId}/${crypto.randomUUID()}-${safeName}`;
+        const { error: upErr } = await supabase.storage.from("kb-uploads").upload(storagePath, file);
+        if (upErr) throw new Error(`no se pudo subir el archivo: ${upErr.message}`);
       }
 
-      // --- Archivo: subida + extracción + verificación + indexado ---
-      // El trabajo va en pasos separados porque las funciones de Netlify
-      // cortan a los 26s y todo junto no entra.
-      setEtapa("Subiendo archivo…");
-      const supabase = createSupabaseBrowserClient();
-      // Supabase Storage rechaza keys con tildes/espacios/paréntesis
-      // ("Invalid key" 400, confirmado en vivo con un nombre real de archivo).
-      // Se sanea SOLO la key del objeto — el nombre original va aparte en
-      // `filename` para mostrar y detectar la extensión.
-      const safeName = file.name
-        .normalize("NFD")
-        .replace(/[̀-ͯ]/g, "")
-        .replace(/[^a-zA-Z0-9.\-_]/g, "_");
-      const path = `${verticalId}/${crypto.randomUUID()}-${safeName}`;
-      const { error: upErr } = await supabase.storage.from("kb-uploads").upload(path, file);
-      if (upErr) throw new Error(`no se pudo subir el archivo: ${upErr.message}`);
-
-      setEtapa("Leyendo el documento…");
-      let prep = await paso("/api/kb/prepare", { storage_path: path, filename: file.name });
-      let texto = String(prep.text ?? "");
-      const issues: string[] = [];
-
-      // Verificación de fidelidad, solo si el texto lo produjo un modelo.
-      if (prep.needsFidelity) {
-        setEtapa("Verificando que coincida con el original…");
-        const v1 = await paso("/api/kb/verify", { storage_path: path, filename: file.name, text: texto });
-        if (v1.veredicto !== "ok") {
-          // Reproceso: se vuelve a leer el documento desde cero con el modelo
-          // capaz. La transcripción no es determinista, así que el segundo
-          // intento suele salir limpio.
-          setEtapa("La lectura no pasó el control — reprocesando…");
-          const prep2 = await paso("/api/kb/prepare", {
-            storage_path: path,
-            filename: file.name,
-            capable: true,
-          });
-          const texto2 = String(prep2.text ?? "");
-          setEtapa("Verificando el reproceso…");
-          const v2 = await paso("/api/kb/verify", { storage_path: path, filename: file.name, text: texto2 });
-          texto = texto2;
-          prep = prep2;
-          if (v2.veredicto !== "ok") {
-            issues.push(...(Array.isArray(v2.problemas) ? v2.problemas.map(String) : []));
-          }
-        }
-      }
-
-      setEtapa("Validando la vertical e indexando…");
-      const j = await paso("/api/kb/ingest", {
-        title,
-        vertical_id: verticalId,
-        content: texto,
-        storage_path: path,
-        filename: String(prep.filename ?? file.name),
-        format: String(prep.format ?? "md"),
-        via_vision: prep.viaVision === true,
-        issues,
+      await pedir("/api/kb/jobs", {
+        method: "POST",
+        body: JSON.stringify({
+          title,
+          vertical_id: verticalId,
+          ...(storagePath ? { storage_path: storagePath, filename: file!.name } : { content }),
+        }),
       });
-      finalizar(j);
+
+      limpiarFormulario();
+      await cargarJobs();
     } catch (err) {
+      setError(err instanceof Error ? err.message : "error de red al encolar el documento");
+    } finally {
       setBusy(false);
-      setEtapa(null);
-      setError(err instanceof Error ? err.message : "error de red al subir el documento");
     }
   }
 
-  function finalizar(json: Record<string, unknown>) {
-    setBusy(false);
-    setEtapa(null);
-    // El validador tiene observaciones: nada se indexó todavía. Se muestra el
-    // texto para revisar/corregir y recién al confirmar entra.
-    if (json.needsConfirmation) {
-      setRevision({
-        text: String(json.text ?? ""),
-        issues: Array.isArray(json.issues) ? json.issues.map(String) : [],
-        format: String(json.format ?? "md"),
-        filename: String(json.filename ?? ""),
-        viaVision: json.viaVision === true,
-      });
-      return;
-    }
-    limpiarFormulario();
-    router.refresh();
-  }
-
-  // Segunda vuelta: el humano revisó (y quizá corrigió) el texto y lo aprueba.
-  // Va por el camino de `content` con `confirmed`, saltando el gate del juez.
-  async function handleConfirmar() {
-    if (!revision) return;
+  async function abrirRevision(jobId: string) {
     setError(null);
-    setBusy(true);
-    setEtapa("Indexando…");
     try {
-      const json = await paso("/api/kb/ingest", {
-        title,
-        vertical_id: verticalId,
-        content: revision.text,
-        confirmed: true,
-        format: revision.format,
-        filename: revision.filename,
-        via_vision: revision.viaVision,
+      const { job } = await pedir(`/api/kb/jobs/${jobId}`, { method: "GET" });
+      setRevision({
+        id: jobId,
+        texto: String(job.texto ?? ""),
+        issues: Array.isArray(job.issues) ? job.issues.map(String) : [],
       });
-      finalizar(json);
     } catch (err) {
+      setError(err instanceof Error ? err.message : "no se pudo abrir la revisión");
+    }
+  }
+
+  async function handleAprobar() {
+    if (!revision) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await pedir(`/api/kb/jobs/${revision.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ texto: revision.texto }),
+      });
+      setRevision(null);
+      await cargarJobs();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "no se pudo aprobar el documento");
+    } finally {
       setBusy(false);
-      setEtapa(null);
-      setError(err instanceof Error ? err.message : "error de red al confirmar el documento");
+    }
+  }
+
+  async function descartarJob(jobId: string) {
+    setBusy(true);
+    try {
+      await pedir(`/api/kb/jobs/${jobId}`, { method: "DELETE" });
+      if (revision?.id === jobId) setRevision(null);
+      await cargarJobs();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "no se pudo descartar");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -203,21 +224,22 @@ export function VerticalKbPanel({ verticalId, docs }: { verticalId: string; docs
     if (res.ok) router.refresh();
   }
 
+  const enCurso = jobs.filter((j) => j.status !== "listo");
+
   return (
     <div className="space-y-4">
       <p className="text-xs text-neutral-500">
         Documentos que el agente consulta (búsqueda semántica, on-demand) SOLO cuando la conversación está
-        clasificada en esta vertical. Acepta PDF, DOCX, TXT, MD, SRT, VTT (hasta 50MB) e imágenes
-        PNG/JPG (hasta 5MB). Los flyers y folletos sin texto seleccionable se leen automáticamente
-        con IA.
+        clasificada en esta vertical. Acepta PDF, DOCX, TXT, MD, SRT, VTT e imágenes PNG/JPG (hasta 30MB).
+        Los escaneos y los folletos sin texto seleccionable se leen con IA página por página; el proceso
+        sigue aunque cierres esta pantalla.
       </p>
 
       {/*
-        DIV, no <form>: este panel vive dentro del <form> de VerticalForm (guardar
-        nombre/prompt de la vertical) — un <form> anidado es HTML inválido y el
-        navegador lo "arregla" reasignando el submit al form de AFUERA, lo que
-        guardaba la vertical Y CERRABA EL MODAL en vez de indexar el documento
-        (confirmado: warning de React "form cannot be a descendant of form").
+        DIV, no <form>: este panel vive dentro del <form> de VerticalForm — un
+        <form> anidado es HTML inválido y el navegador lo "arregla" reasignando
+        el submit al form de AFUERA, lo que guardaba la vertical Y CERRABA EL
+        MODAL en vez de indexar el documento.
       */}
       <div className="space-y-3 rounded-lg border border-neutral-200 bg-neutral-50 p-4">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -226,11 +248,11 @@ export function VerticalKbPanel({ verticalId, docs }: { verticalId: string; docs
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             onKeyDown={(e) => {
-              // Enter en un <input> de texto dispara el submit del form
-              // ancestro más cercano — acá ese es el de VerticalForm.
+              // Enter en un <input> dispara el submit del form ancestro más
+              // cercano — acá ese es el de VerticalForm.
               if (e.key === "Enter") e.preventDefault();
             }}
-            placeholder='Título — ej: "Tarifario Salud Individual 2026"'
+            placeholder='Título — ej: "Condicionado Automóvil 2026"'
             className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm focus:border-neutral-900 focus:ring-1 focus:ring-neutral-900 focus:outline-none"
           />
           <label
@@ -279,73 +301,74 @@ export function VerticalKbPanel({ verticalId, docs }: { verticalId: string; docs
             ⚠ {error}
           </p>
         )}
-        {/* Revisión pendiente: el validador tiene observaciones y NADA se
-            indexó todavía. Se muestra el texto extraído (editable) para que
-            el humano lo apruebe o lo corrija. */}
-        {revision && (
-          <div className="space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-3">
-            <p className="text-xs font-semibold text-amber-900">
-              Revisa antes de indexar — el validador encontró algo que confirmar:
-            </p>
-            <ul className="list-inside list-disc space-y-0.5 text-xs text-amber-900">
-              {revision.issues.map((it, i) => (
-                <li key={i}>{it}</li>
-              ))}
-            </ul>
-            <p className="text-[11px] text-amber-800">
-              Este es el texto que se va a indexar ({revision.text.length} caracteres). Puedes
-              corregirlo aquí mismo antes de aprobarlo.
-            </p>
-            <textarea
-              rows={12}
-              value={revision.text}
-              onChange={(e) => setRevision({ ...revision, text: e.target.value })}
-              className="w-full rounded-lg border border-amber-300 bg-white px-3 py-2 font-mono text-xs focus:border-neutral-900 focus:ring-1 focus:ring-neutral-900 focus:outline-none"
-            />
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={handleConfirmar}
-                disabled={busy || !revision.text.trim()}
-                className="inline-flex items-center rounded-lg bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {busy ? "Indexando…" : "Aprobar e indexar"}
-              </button>
-              <button
-                type="button"
-                onClick={() => setRevision(null)}
-                disabled={busy}
-                className="inline-flex items-center rounded-lg border border-neutral-300 bg-white px-3 py-1.5 text-xs font-medium text-neutral-700 transition-colors hover:bg-neutral-50 disabled:opacity-50"
-              >
-                Descartar
-              </button>
-            </div>
-          </div>
-        )}
 
-        {!revision && (
-          <button
-            type="button"
-            onClick={handleSubmit}
-            disabled={busy || missingTitle || missingSource}
-            title={
-              missingTitle
-                ? "Falta el título"
-                : missingSource
-                ? "Falta el archivo o el contenido"
-                : undefined
-            }
-            className="inline-flex items-center justify-center gap-2 rounded-lg bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-neutral-800 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {busy ? etapa ?? "Procesando…" : "Indexar en esta vertical"}
-          </button>
-        )}
-        {busy && etapa && (
-          <p className="text-[11px] text-neutral-500">
-            {etapa} Leer y verificar un documento escaneado puede tomar hasta un minuto.
-          </p>
-        )}
+        <button
+          type="button"
+          onClick={handleSubmit}
+          disabled={busy || missingTitle || missingSource}
+          title={missingTitle ? "Falta el título" : missingSource ? "Falta el archivo o el contenido" : undefined}
+          className="inline-flex items-center justify-center gap-2 rounded-lg bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-neutral-800 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {busy ? "Encolando…" : "Indexar en esta vertical"}
+        </button>
       </div>
+
+      {/* ---- Cargas en curso ---- */}
+      {enCurso.length > 0 && (
+        <div className="space-y-2">
+          {enCurso.map((j) => (
+            <JobCard
+              key={j.id}
+              job={j}
+              busy={busy}
+              onRevisar={() => abrirRevision(j.id)}
+              onDescartar={() => descartarJob(j.id)}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* ---- Revisión humana abierta ---- */}
+      {revision && (
+        <div className="space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-3">
+          <p className="text-xs font-semibold text-amber-900">
+            Revisa antes de indexar — el validador encontró algo que confirmar:
+          </p>
+          <ul className="list-inside list-disc space-y-0.5 text-xs text-amber-900">
+            {revision.issues.map((it, i) => (
+              <li key={i}>{it}</li>
+            ))}
+          </ul>
+          <p className="text-[11px] text-amber-800">
+            Este es el texto que se va a indexar ({revision.texto.length.toLocaleString("es-VE")} caracteres).
+            Puedes corregirlo aquí mismo antes de aprobarlo.
+          </p>
+          <textarea
+            rows={14}
+            value={revision.texto}
+            onChange={(e) => setRevision({ ...revision, texto: e.target.value })}
+            className="w-full rounded-lg border border-amber-300 bg-white px-3 py-2 font-mono text-xs focus:border-neutral-900 focus:ring-1 focus:ring-neutral-900 focus:outline-none"
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={handleAprobar}
+              disabled={busy || !revision.texto.trim()}
+              className="inline-flex items-center rounded-lg bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {busy ? "Indexando…" : "Aprobar e indexar"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setRevision(null)}
+              disabled={busy}
+              className="inline-flex items-center rounded-lg border border-neutral-300 bg-white px-3 py-1.5 text-xs font-medium text-neutral-700 transition-colors hover:bg-neutral-50 disabled:opacity-50"
+            >
+              Cerrar
+            </button>
+          </div>
+        </div>
+      )}
 
       {docs.length > 0 ? (
         <div className="overflow-hidden rounded-lg border border-neutral-200">
@@ -392,4 +415,101 @@ export function VerticalKbPanel({ verticalId, docs }: { verticalId: string; docs
       />
     </div>
   );
+}
+
+function JobCard({
+  job,
+  busy,
+  onRevisar,
+  onDescartar,
+}: {
+  job: Job;
+  busy: boolean;
+  onRevisar: () => void;
+  onDescartar: () => void;
+}) {
+  const fallido = job.status === "fallido";
+  const revisable = job.status === "revision";
+  const tono = fallido
+    ? "border-red-200 bg-red-50"
+    : revisable
+    ? "border-amber-300 bg-amber-50"
+    : "border-neutral-200 bg-white";
+
+  // El troceo tarda un momento, así que un job recién encolado todavía no
+  // tiene tandas: mostrar 0/0 se leería como "no avanza".
+  const pct =
+    job.tandas_total > 0
+      ? Math.round(((job.tandas_listas + job.tandas_fallidas) / job.tandas_total) * 100)
+      : 0;
+
+  return (
+    <div className={`space-y-1.5 rounded-lg border px-3 py-2 text-xs ${tono}`}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-medium text-neutral-900">{job.title}</span>
+        <span className="text-[11px] text-neutral-500">{etiqueta(job)}</span>
+      </div>
+
+      {!fallido && !revisable && (
+        <div className="h-1.5 overflow-hidden rounded-full bg-neutral-200">
+          <div
+            className="h-full rounded-full bg-neutral-900 transition-[width] duration-500"
+            style={{ width: `${Math.max(pct, 4)}%` }}
+          />
+        </div>
+      )}
+
+      {fallido && job.last_error && <p className="text-red-700">{job.last_error}</p>}
+      {revisable && (
+        <p className="text-amber-900">
+          {job.issues?.length ?? 0} {job.issues?.length === 1 ? "observación" : "observaciones"} — nada se
+          indexó todavía.
+        </p>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2 pt-0.5">
+        {revisable && (
+          <button
+            type="button"
+            onClick={onRevisar}
+            disabled={busy}
+            className="rounded-lg bg-neutral-900 px-2.5 py-1 font-medium text-white hover:bg-neutral-800 disabled:opacity-50"
+          >
+            Revisar
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onDescartar}
+          disabled={busy}
+          className="rounded-lg border border-neutral-300 bg-white px-2.5 py-1 font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
+        >
+          Descartar
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function etiqueta(job: Job): string {
+  switch (job.status) {
+    case "pendiente":
+      return "en cola…";
+    case "transcribiendo":
+      return job.tandas_total > 0
+        ? `leyendo ${job.tandas_listas + job.tandas_fallidas}/${job.tandas_total}${
+            job.total_pages ? ` · ${job.total_pages} págs.` : ""
+          }`
+        : "preparando…";
+    case "ensamblando":
+      return "validando e indexando…";
+    case "aprobado":
+      return "indexando lo aprobado…";
+    case "revision":
+      return "necesita tu revisión";
+    case "fallido":
+      return "no se pudo cargar";
+    default:
+      return job.status;
+  }
 }

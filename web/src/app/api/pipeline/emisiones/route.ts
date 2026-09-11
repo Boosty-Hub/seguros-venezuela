@@ -42,7 +42,7 @@ export async function GET() {
 export async function POST(request: Request) {
   // Handler envuelto: una excepción cruda se escapaba como 500 sin cuerpo JSON
   // y el frontend explotaba en el res.json() sin mostrar nada (mismo criterio
-  // que /api/kb/ingest).
+  // que /api/kb/jobs).
   try {
     return await manejar(request);
   } catch (err) {

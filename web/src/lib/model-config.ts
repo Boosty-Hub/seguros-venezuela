@@ -3,11 +3,17 @@
 // que se diseñó cada componente. Los precios viven en lib/ai-pricing — agregar
 // un modelo acá requiere también su fila de pricing.
 
-export const ALLOWED_MODELS = ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-8"] as const;
+export const ALLOWED_MODELS = [
+  "claude-haiku-4-5",
+  "claude-sonnet-5",
+  "claude-sonnet-4-6",
+  "claude-opus-4-8",
+] as const;
 
 export const MODEL_LABELS: Record<string, string> = {
   "claude-haiku-4-5": "Haiku 4.5 — el más barato ($1/$5 por MTok)",
-  "claude-sonnet-4-6": "Sonnet 4.6 — equilibrio ($3/$15 por MTok)",
+  "claude-sonnet-5": "Sonnet 5 — equilibrio ($2/$10 por MTok)",
+  "claude-sonnet-4-6": "Sonnet 4.6 — la generación anterior ($3/$15 por MTok)",
   "claude-opus-4-8": "Opus 4.8 — el más capaz ($5/$25 por MTok)",
 };
 
@@ -21,8 +27,12 @@ export const MODEL_KEYS: Record<string, string> = {
   KB_OCR_MODEL: "claude-haiku-4-5",
   // Sonnet a propósito: Haiku como juez dejó pasar una sección ENTERA faltante
   // en pruebas reales. Este modelo también hace el reproceso cuando el primer
-  // intento no pasa la verificación.
-  KB_JUDGE_MODEL: "claude-sonnet-4-6",
+  // intento no pasa la verificación, y es el que puede con documentos largos:
+  // el tope de páginas de un bloque `document` es 100 en los modelos de 200K
+  // (Haiku) y 600 en los de 1M (Sonnet, Opus).
+  // Sonnet 5 y no 4.6: mismo contexto de 1M por $2/$10 en vez de $3/$15, y la
+  // verificación es la parte cara de la ingesta (lee el documento entero).
+  KB_JUDGE_MODEL: "claude-sonnet-5",
 };
 
 // Descripción humana de qué gobierna cada key (para el panel de /consumo).

@@ -5,6 +5,8 @@ import {
   BarChart3, TrendUp, Target, Users,
 } from "@/components/ui";
 import { DestinosView } from "./destinos";
+import { RangoFechas } from "./rango-fechas";
+import { describirRango, rangoATimestamps } from "@/lib/rango-fechas";
 
 export const dynamic = "force-dynamic";
 
@@ -27,7 +29,20 @@ type TicketRow = {
   created_time: string | null; web_url: string | null;
 };
 
-type SearchParams = { q?: string; status?: string; channel?: string; page?: string; vista?: string };
+// Lo que devuelve zoho_embudo_resumen() (0081). Reemplaza a las vistas
+// v_kpis/v_funnel/v_channel/v_agent, que agregan sobre TODO el histórico y no
+// se pueden acotar a un periodo.
+type EmbudoResumen = {
+  kpis?: Partial<Kpis>;
+  funnel?: FunnelRow[];
+  channel?: ChannelRow[];
+  agent?: AgentRow[];
+};
+
+type SearchParams = {
+  q?: string; status?: string; channel?: string; page?: string; vista?: string;
+  desde?: string; hasta?: string;
+};
 
 function Bar({ value, max, color }: { value: number; max: number; color?: string }) {
   const w = Math.max(2, (value / (max || 1)) * 100);
@@ -44,20 +59,80 @@ export default async function PipelinePage({ searchParams }: { searchParams: Sea
   // no romper links viejos: cualquier cosa que no sea "embudo" cae ahí.
   const vista = searchParams.vista === "embudo" ? "embudo" : "destinos";
 
-  const [{ data: stagesData }, { data: kpisData }, { data: funnelData }, { data: channelData }, { data: agentData }] =
-    await Promise.all([
-      supabase.from("pipeline_stages").select("status,stage_order,stage_group,color").order("stage_order"),
-      supabase.from("v_kpis").select("*").maybeSingle(),
-      supabase.from("v_funnel").select("*").order("stage_order"),
-      supabase.from("v_channel").select("*"),
-      supabase.from("v_agent").select("*").limit(12),
-    ]);
+  // Rango de fechas: en la URL van fechas inclusivas (`YYYY-MM-DD`); a las
+  // consultas van timestamps con la zona de Venezuela y el corte de arriba
+  // medio abierto (ver lib/rango-fechas.ts).
+  const dDesde = searchParams.desde ?? null;
+  const dHasta = searchParams.hasta ?? null;
+  const rango = rangoATimestamps(dDesde, dHasta);
+  const periodo = describirRango(dDesde, dHasta);
+
+  // Las pestañas van en `actions` (estrecho, junto al título) y el filtro en
+  // `toolbar`, la fila de ancho completo de debajo. Juntarlos en `actions`
+  // aplastaba el título a una palabra por línea y dejaba el botón "Aplicar"
+  // fuera de pantalla a 1280px — el propio PageShell avisa de eso.
+  const tabs = (
+    <div className="flex flex-wrap items-center gap-2">
+      <div className="flex gap-1 overflow-x-auto rounded-lg border border-neutral-200 bg-white p-0.5">
+        {[
+          { v: "destinos", label: "B2C / B2B por corredor" },
+          { v: "embudo", label: "Embudo Zoho" },
+        ].map((t) => {
+          const qs = new URLSearchParams();
+          if (t.v === "embudo") qs.set("vista", "embudo");
+          if (dDesde) qs.set("desde", dDesde);
+          if (dHasta) qs.set("hasta", dHasta);
+          const href = qs.toString() ? `/pipeline?${qs}` : "/pipeline";
+          return (
+            <Link
+              key={t.v}
+              href={href}
+              className={
+                "shrink-0 rounded-md px-3 py-1.5 text-xs font-medium transition-colors " +
+                (vista === t.v ? "bg-neutral-900 text-white" : "text-neutral-600 hover:bg-neutral-50")
+              }
+            >
+              {t.label}
+            </Link>
+          );
+        })}
+      </div>
+    </div>
+  );
+  const barraPeriodo = <RangoFechas desde={dDesde} hasta={dHasta} />;
+
+  // Salida temprana: la pestaña de destinos no necesita NADA del embudo, y
+  // antes se ejecutaban igual sus cinco consultas más la tabla de tickets.
+  if (vista === "destinos") {
+    return (
+      <PageShell
+        title="Pipeline Zoho Desk"
+        description={`A dónde va cada ticket de Zoho: al agente (cliente final) o al embudo de corredores — ${periodo}.`}
+        actions={tabs}
+        toolbar={barraPeriodo}
+      >
+        <DestinosView
+          since={rango.desde}
+          hasta={rango.hasta}
+          periodo={periodo}
+          dDesde={dDesde}
+          dHasta={dHasta}
+        />
+      </PageShell>
+    );
+  }
+
+  const [{ data: stagesData }, { data: resumenData }] = await Promise.all([
+    supabase.from("pipeline_stages").select("status,stage_order,stage_group,color").order("stage_order"),
+    supabase.rpc("zoho_embudo_resumen", { p_desde: rango.desde, p_hasta: rango.hasta }),
+  ]);
 
   const stages = (stagesData ?? []) as Stage[];
-  const kpis = (kpisData ?? {}) as Partial<Kpis>;
-  const funnel = (funnelData ?? []) as FunnelRow[];
-  const channels = ((channelData ?? []) as ChannelRow[]).filter((r) => r.channel);
-  const agents = (agentData ?? []) as AgentRow[];
+  const resumen = (resumenData ?? {}) as EmbudoResumen;
+  const kpis = resumen.kpis ?? {};
+  const funnel = (resumen.funnel ?? []) as FunnelRow[];
+  const channels = ((resumen.channel ?? []) as ChannelRow[]).filter((r) => r.channel);
+  const agents = (resumen.agent ?? []) as AgentRow[];
 
   const openStatuses = stages.filter((s) => s.stage_group === "abierto").map((s) => s.status);
   const stageByStatus = new Map(stages.map((s) => [s.status, s]));
@@ -75,12 +150,13 @@ export default async function PipelinePage({ searchParams }: { searchParams: Sea
   // ---- Kanban: tickets abiertos, agrupados por etapa ----
   let kanbanTickets: TicketRow[] = [];
   if (openStatuses.length) {
-    const { data } = await supabase
+    let kanbanQuery = supabase
       .from("tickets")
       .select("id,ticket_number,subject,status,channel,assignee_name,contact_name,monto_prima,plan_hcm,created_time,web_url")
-      .in("status", openStatuses)
-      .order("created_time", { ascending: false })
-      .limit(1500);
+      .in("status", openStatuses);
+    if (rango.desde) kanbanQuery = kanbanQuery.gte("created_time", rango.desde);
+    if (rango.hasta) kanbanQuery = kanbanQuery.lt("created_time", rango.hasta);
+    const { data } = await kanbanQuery.order("created_time", { ascending: false }).limit(1500);
     kanbanTickets = (data ?? []) as TicketRow[];
   }
   const byStatus = new Map<string, TicketRow[]>();
@@ -106,6 +182,8 @@ export default async function PipelinePage({ searchParams }: { searchParams: Sea
     );
   if (fStatus) tableQuery = tableQuery.eq("status", fStatus);
   if (fChannel) tableQuery = tableQuery.eq("channel", fChannel);
+  if (rango.desde) tableQuery = tableQuery.gte("created_time", rango.desde);
+  if (rango.hasta) tableQuery = tableQuery.lt("created_time", rango.hasta);
   if (q) {
     const s = q.replace(/[,()]/g, " ");
     tableQuery = tableQuery.or(
@@ -123,55 +201,27 @@ export default async function PipelinePage({ searchParams }: { searchParams: Sea
   // Los filtros del embudo tienen que arrastrar `vista=embudo`: sin eso,
   // filtrar te devolvía a la pestaña por defecto (B2C/B2B).
   function pageHref(patch: Record<string, string>) {
-    const params = new URLSearchParams({ vista: "embudo", q, status: fStatus, channel: fChannel, page: String(page) });
+    const params = new URLSearchParams({
+      vista: "embudo", q, status: fStatus, channel: fChannel, page: String(page),
+      desde: dDesde ?? "", hasta: dHasta ?? "",
+    });
     for (const [k, v] of Object.entries(patch)) {
       if (v) params.set(k, v);
       else params.delete(k);
     }
-    for (const k of ["q", "status", "channel", "page"]) {
+    for (const k of ["q", "status", "channel", "page", "desde", "hasta"]) {
       if (!params.get(k)) params.delete(k);
     }
     const qs = params.toString();
     return qs ? `/pipeline?${qs}` : "/pipeline";
   }
 
-  const tabs = (
-    <div className="flex gap-1 overflow-x-auto rounded-lg border border-neutral-200 bg-white p-0.5">
-      {[
-        { v: "destinos", label: "B2C / B2B por corredor" },
-        { v: "embudo", label: "Embudo Zoho" },
-      ].map((t) => (
-        <Link
-          key={t.v}
-          href={t.v === "destinos" ? "/pipeline" : `/pipeline?vista=${t.v}`}
-          className={
-            "shrink-0 rounded-md px-3 py-1.5 text-xs font-medium transition-colors " +
-            (vista === t.v ? "bg-neutral-900 text-white" : "text-neutral-600 hover:bg-neutral-50")
-          }
-        >
-          {t.label}
-        </Link>
-      ))}
-    </div>
-  );
-
-  if (vista === "destinos") {
-    return (
-      <PageShell
-        title="Pipeline Zoho Desk"
-        description="A dónde va cada ticket de Zoho: al agente (cliente final) o al embudo de corredores."
-        actions={tabs}
-      >
-        <DestinosView since={null} />
-      </PageShell>
-    );
-  }
-
   return (
     <PageShell
       title="Pipeline Zoho Desk"
-      description="Embudo de ventas sincronizado desde Zoho Desk — mismos datos que el dashboard público del pipeline."
+      description={`Embudo de ventas sincronizado desde Zoho Desk — ${periodo}.`}
       actions={tabs}
+      toolbar={barraPeriodo}
     >
       <StatRow>
         <StatCard label="Total tickets" value={fmtN(kpis.total_tickets)} hint={`${fmtN(kpis.nuevos_30d)} en 30 días`} icon={<BarChart3 size={18} />} tone="brand" />
@@ -286,6 +336,12 @@ export default async function PipelinePage({ searchParams }: { searchParams: Sea
         <div className="flex flex-col gap-2 border-b border-neutral-100 p-3 sm:flex-row sm:items-center sm:justify-between">
           <h2 className="text-sm font-semibold text-neutral-900">Tickets</h2>
           <form className="flex flex-wrap items-center gap-2" action="/pipeline" method="get">
+            {/* Un <form method=get> REEMPLAZA el query string entero: sin
+                estos hidden, filtrar por etapa te sacaba del embudo y te
+                borraba el periodo elegido. */}
+            <input type="hidden" name="vista" value="embudo" />
+            {dDesde && <input type="hidden" name="desde" value={dDesde} />}
+            {dHasta && <input type="hidden" name="hasta" value={dHasta} />}
             <input
               type="text" name="q" defaultValue={q} placeholder="Buscar asunto, contacto, correo…"
               className="w-56 rounded-lg border border-neutral-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-brand/30"

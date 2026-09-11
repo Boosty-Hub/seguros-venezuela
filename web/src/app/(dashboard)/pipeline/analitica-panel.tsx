@@ -45,7 +45,13 @@ type Analitica = {
 type Pestana = "cotizaciones" | "emisiones" | "efectividad";
 
 
-export function PanelAnalitica({ since, children }: { since: string | null; children: React.ReactNode }) {
+export function PanelAnalitica({ since, hasta, periodo, children }: {
+  since: string | null;
+  hasta: string | null;
+  /** Ya redactado por la página: el `hasta` de las RPC es el corte EXCLUSIVO. */
+  periodo: string;
+  children: React.ReactNode;
+}) {
   const [abierto, setAbierto] = useState(false);
   const [datos, setDatos] = useState<Analitica | null>(null);
   const [emis, setEmis] = useState<Emisiones | null>(null);
@@ -60,7 +66,7 @@ export function PanelAnalitica({ since, children }: { since: string | null; chil
       const res = await fetch("/api/zoho/analitica", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ since }),
+        body: JSON.stringify({ since, hasta }),
       });
       const json = await res.json().catch(() => ({ error: `respuesta inválida (${res.status})` }));
       if (!res.ok) throw new Error(json.error ?? "error");
@@ -71,14 +77,16 @@ export function PanelAnalitica({ since, children }: { since: string | null; chil
     } finally {
       setCargando(false);
     }
-  }, [since]);
+  }, [since, hasta]);
 
   // El período lo manda la página: si cambia, lo que hay en el panel ya no
-  // corresponde y hay que volver a pedirlo.
+  // corresponde y hay que volver a pedirlo. Las DOS puntas del rango cuentan:
+  // con solo `since` en las dependencias, mover la fecha de fin dejaba el
+  // panel mostrando los números del rango anterior.
   useEffect(() => {
     setDatos(null);
     setEmis(null);
-  }, [since]);
+  }, [since, hasta]);
 
   useEffect(() => {
     if (abierto && !datos && !cargando) void cargar();
@@ -142,9 +150,7 @@ export function PanelAnalitica({ since, children }: { since: string | null; chil
                     Analítica del pipeline
                   </h3>
                   <p className="mt-0.5 text-[11px] text-neutral-400">
-                    {since
-                      ? `Cotizaciones desde ${new Date(since).toLocaleDateString("es-VE", { day: "2-digit", month: "short", year: "numeric" })}`
-                      : "Todo el histórico de cotizaciones"}
+                    Cotizaciones {periodo}
                     {emis?.periodo?.desde && ` · emisiones de ${fmtDia(emis.periodo.desde)} a ${fmtDia(emis.periodo.hasta)}`}
                   </p>
                 </div>

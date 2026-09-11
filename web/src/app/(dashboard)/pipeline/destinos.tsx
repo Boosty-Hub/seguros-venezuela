@@ -5,6 +5,7 @@ import { PanelAnalitica } from "./analitica-panel";
 import { TablaEfectividad, type CorredorEfec } from "./efectividad";
 import { CargarEmisiones } from "./cargar-emisiones";
 import { RevisarAlias } from "./alias-corredores";
+import { PeriodosEmisiones, type PeriodoEmision } from "./periodos-emisiones";
 
 // Vista "Destinos": a dónde va cada ticket de Zoho.
 //
@@ -67,13 +68,26 @@ type Efectividad = {
 const fmtDia = (s: string | null | undefined) =>
   s ? new Date(`${String(s).slice(0, 10)}T12:00:00Z`).toLocaleDateString("es-VE", { day: "2-digit", month: "short", year: "numeric" }) : "—";
 
-export async function DestinosView({ since }: { since: string | null }) {
+export async function DestinosView({ since, hasta, periodo, dDesde, dHasta }: {
+  since: string | null;
+  hasta: string | null;
+  periodo: string;
+  /** Las fechas tal como están en la URL (`YYYY-MM-DD`), para el selector de mes. */
+  dDesde: string | null;
+  dHasta: string | null;
+}) {
   const supabase = createSupabaseServerClient();
   // Las dos en paralelo: la de efectividad tarda ~150ms y no depende de la otra.
-  const [{ data, error }, { data: efecData, error: efecError }] = await Promise.all([
-    supabase.rpc("zoho_pipeline_overview", { p_since: since }),
-    supabase.rpc("zoho_corredores_efectividad", { p_since: since, p_maduracion_dias: 60 }),
-  ]);
+  const [{ data, error }, { data: efecData, error: efecError }, { data: periodosData }] =
+    await Promise.all([
+      supabase.rpc("zoho_pipeline_overview", { p_since: since, p_hasta: hasta }),
+      supabase.rpc("zoho_corredores_efectividad", { p_since: since, p_maduracion_dias: 60, p_hasta: hasta }),
+      // Qué meses de emisiones hay cargados (0083). No lleva rango a propósito:
+      // el selector tiene que seguir ofreciendo los otros meses aunque haya uno
+      // filtrado, o no habría forma de salir del que estás mirando.
+      supabase.rpc("emisiones_periodos"),
+    ]);
+  const periodos = (periodosData ?? []) as PeriodoEmision[];
   const ov = (data ?? null) as Overview | null;
   const efec = (efecData ?? null) as Efectividad | null;
 
@@ -89,7 +103,7 @@ export async function DestinosView({ since }: { since: string | null }) {
   const pendienteB2b = ov.b2b_tickets - ov.b2b_en_kommo;
 
   return (
-    <PanelAnalitica since={since}>
+    <PanelAnalitica since={since} hasta={hasta} periodo={periodo}>
       <div className="space-y-8">
       <section className="space-y-3">
         <h2 className="text-sm font-semibold tracking-tight text-neutral-900">A dónde va cada ticket</h2>
@@ -156,6 +170,7 @@ export async function DestinosView({ since }: { since: string | null }) {
                 totalCorredores={efec.totales.corredores}
               />
             )}
+            <PeriodosEmisiones periodos={periodos} desde={dDesde} hasta={dHasta} />
             <CargarEmisiones
               periodoCargado={
                 efec?.periodo_emisiones?.desde
@@ -264,7 +279,7 @@ export async function DestinosView({ since }: { since: string | null }) {
           agrupan por cédula + titular, así que varias cotizaciones a la misma persona (normalmente un grupo familiar,
           una por edad) quedan juntas, sin fusionar a gente distinta que comparte una cédula de relleno.
         </p>
-        <ListaCorredores corredores={ov.corredores} since={since} />
+        <ListaCorredores corredores={ov.corredores} since={since} hasta={hasta} />
       </section>
       </div>
     </PanelAnalitica>

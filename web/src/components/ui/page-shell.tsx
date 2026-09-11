@@ -52,8 +52,16 @@ export function PageShell({
                 <p className="mt-0.5 text-xs text-neutral-500 leading-snug">{description}</p>
               )}
             </div>
+            {/* `lg:pr-28` reserva el hueco del widget de soporte de Boosty,
+                que es `fixed top-3 right-3 z-[60]` en desktop (ver
+                BoostySupportMount) y cae justo encima de esta esquina en TODAS
+                las páginas. No era solo estético: tapaba la pestaña "Embudo
+                Zoho" de /pipeline lo bastante como para que no se pudiera
+                clicar (lo destapó un e2e que navega por la pestaña en vez de
+                por la URL). Bajo `lg` el widget se va abajo a la derecha y no
+                hace falta margen. */}
             {actions && (
-              <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>
+              <div className="flex shrink-0 flex-wrap items-center gap-2 lg:pr-28">{actions}</div>
             )}
           </div>
           {toolbar && (

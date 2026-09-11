@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 
 // Tabla de corredores: Corredor → Cliente → cotizaciones.
 //
@@ -55,7 +55,7 @@ const fmtCedula = (c: string | null) => (c ? `V-${c}` : "sin cédula");
 
 const claveCliente = (c: Cliente) => `${c.cedula ?? "sc"}|${c.titular ?? ""}|${c.ultima ?? ""}`;
 
-export function ListaCorredores({ corredores, since }: { corredores: Corredor[]; since: string | null }) {
+export function ListaCorredores({ corredores, since, hasta }: { corredores: Corredor[]; since: string | null; hasta: string | null }) {
   const [abierto, setAbierto] = useState<string | null>(null);
   const [cache, setCache] = useState<Record<string, Detalle>>({});
   const [cargando, setCargando] = useState<string | null>(null);
@@ -65,6 +65,16 @@ export function ListaCorredores({ corredores, since }: { corredores: Corredor[];
   const [dir, setDir] = useState<Dir>("desc");
   const [porPagina, setPorPagina] = useState(TAMANOS[0]);
   const [pagina, setPagina] = useState(0);
+
+  // El detalle de cada corredor se cachea por asesor, pero depende del PERIODO:
+  // al cambiar el rango la página se re-renderiza y este componente conserva su
+  // estado, así que sin esto volver a desplegar un corredor mostraría las
+  // cotizaciones del rango anterior sin que nada lo delate.
+  useEffect(() => {
+    setCache({});
+    setError(null);
+    setAbierto(null);
+  }, [since, hasta]);
 
   const ordenados = useMemo(() => {
     const q = busqueda.trim().toLowerCase();
@@ -109,7 +119,7 @@ export function ListaCorredores({ corredores, since }: { corredores: Corredor[];
       const res = await fetch("/api/zoho/corredor", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ asesor, since }),
+        body: JSON.stringify({ asesor, since, hasta }),
       });
       const json = await res.json().catch(() => ({ error: `respuesta inválida (${res.status})` }));
       if (!res.ok) throw new Error(json.error ?? "error");

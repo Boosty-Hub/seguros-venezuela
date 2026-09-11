@@ -16,9 +16,7 @@
     "@supabase/ssr": "^0.10.3",
     "@supabase/supabase-js": "^2.105.4",
     "ai": "^4.3.19",
-    "mammoth": "^1.12.0",
     "next": "14.2.35",
-    "pdf-parse": "^2.4.5",
     "react": "^18",
     "react-dom": "^18",
     "zod": "^3.25.76"

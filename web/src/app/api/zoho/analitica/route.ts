@@ -13,15 +13,19 @@ export async function POST(request: Request) {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  const body = (await request.json().catch(() => ({}))) as { since?: string | null };
+  const body = (await request.json().catch(() => ({}))) as {
+    since?: string | null;
+    hasta?: string | null;
+  };
   const since = body.since ?? null;
+  const hasta = body.hasta ?? null;
 
   // Las dos en paralelo y en una sola petición: el panel las necesita juntas
   // (una pestaña cada una) y así hay un único estado de carga en vez de que
   // cada pestaña parpadee la primera vez que se abre.
   const [cotiz, emis] = await Promise.all([
-    supabase.rpc("zoho_pipeline_analitica", { p_since: since }),
-    supabase.rpc("zoho_emisiones_analitica", { p_since: since, p_maduracion_dias: 60 }),
+    supabase.rpc("zoho_pipeline_analitica", { p_since: since, p_hasta: hasta }),
+    supabase.rpc("zoho_emisiones_analitica", { p_since: since, p_maduracion_dias: 60, p_hasta: hasta }),
   ]);
 
   if (cotiz.error) return NextResponse.json({ error: cotiz.error.message }, { status: 500 });

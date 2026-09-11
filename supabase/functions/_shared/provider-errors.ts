@@ -133,3 +133,42 @@ export async function resolveProviderCreditAlert(
     );
   }
 }
+
+// ---------------------------------------------------------------------------
+// Vive acá y no en quien la usa porque la usan DOS colas con el mismo problema:
+// `process-inbound` (clasificación de mensajes) y `kb-transcribe` (tandas de la
+// ingesta de KB). Es una regla que ya costó 102 mensajes una vez; tenerla
+// duplicada es pedir que las dos copias se separen (trampa 24).
+/**
+ * ¿El fallo es de la CUENTA o del MENSAJE?
+ *
+ * El tope de reintentos existe para que un mensaje imposible de clasificar no
+ * queme Haiku cada minuto para siempre. Pero contaba igual los fallos que no
+ * tienen NADA que ver con el mensaje: entre el 15 y el 19 de agosto la cuenta
+ * de Anthropic se quedó sin saldo, los 5 intentos se gastaron contra ese 400 y
+ * 102 mensajes (17% del total) quedaron condenados con prefijo "recover:", que
+ * los saca de la cola de reintentos PARA SIEMPRE. Con el saldo restituido se
+ * habrían clasificado sin problema, pero ya nadie los iba a volver a mirar.
+ *
+ * Un fallo de cuenta o de plataforma se reintentará indefinidamente, y eso es
+ * lo correcto: mientras dure, TODOS los mensajes fallan, así que el coste no
+ * se dispara (no hay llamadas que consumir) y en cuanto se resuelve el atasco
+ * se drena solo. Solo los fallos atribuibles al mensaje gastan intentos.
+ */
+export function esFalloDeCuenta(err: unknown): boolean {
+  const m = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return (
+    m.includes("credit balance") ||      // sin saldo
+    m.includes("quota") ||
+    m.includes("billing") ||
+    m.includes("rate_limit") ||          // 429
+    m.includes("rate limit") ||
+    m.includes("overloaded") ||          // 529
+    m.includes("authentication") ||      // API key rota o rotada
+    m.includes("permission") ||
+    / 5\d\d(\D|$)/.test(m) ||               // 500/502/503/529 de la plataforma
+    m.includes("timeout") ||
+    m.includes("econnreset") ||
+    m.includes("fetch failed")
+  );
+}

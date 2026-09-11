@@ -4,6 +4,7 @@ export type ModelPricing = {
   cacheWrite5m: number; cacheWrite1h: number; cacheRead: number;
 };
 export const AI_PRICING: Record<string, ModelPricing> = {
+  "claude-sonnet-5":   { input: 2, output: 10, cacheWrite5m: 2.50, cacheWrite1h: 4, cacheRead: 0.20 },
   "claude-sonnet-4-6": { input: 3, output: 15, cacheWrite5m: 3.75, cacheWrite1h: 6, cacheRead: 0.30 },
   "claude-haiku-4-5":  { input: 1, output: 5,  cacheWrite5m: 1.25, cacheWrite1h: 2, cacheRead: 0.10 },
   "claude-opus-4-8":   { input: 5, output: 25, cacheWrite5m: 6.25, cacheWrite1h: 10, cacheRead: 0.50 },
